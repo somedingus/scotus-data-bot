@@ -1,0 +1,9 @@
+# local Claude Code config
+.claude/
+
+# python
+__pycache__/
+*.pyc
+
+# raw API cache (regenerable; can be large)
+scotus_filter/raw_clusters.json
