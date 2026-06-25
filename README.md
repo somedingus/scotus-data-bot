@@ -43,13 +43,27 @@ python3 scotus_ingest.py --after 1790-01-01 --before 1835-12-31
 python3 scotus_ingest.py --from-cache             # reprocess cached raw data, no refetch
 ```
 
-Anonymous access works but is rate-limited (~4 min for the full range due to throttling). Set a free CourtListener token to eliminate throttling and enable a fast cache:
+Anonymous access works but is rate-limited. The script reads a CourtListener API
+token from the `COURTLISTENER_API_TOKEN` environment variable when present and
+sends it as `Authorization: Token <key>`.
+
+This project manages that token with [agentsecrets](https://github.com/The-17/agentsecrets)
+(zero-knowledge: the value is injected into the child process and never printed).
+The directory is linked to the `dev-secret-agent` project; run the ingest with:
+
+```bash
+agentsecrets env -- python3 scotus_ingest.py
+```
+
+Or, with the token already in your environment by any other means:
 
 ```bash
 export COURTLISTENER_API_TOKEN=your_token_here
+python3 scotus_ingest.py
 ```
 
-The first successful run writes `scotus_filter/raw_clusters.json`, after which `--from-cache` reprocesses instantly.
+The first successful run writes `scotus_filter/raw_clusters.json` (gitignored),
+after which `--from-cache` reprocesses instantly without any network calls.
 
 ## Status / next steps
 
