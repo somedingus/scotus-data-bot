@@ -55,13 +55,6 @@ The directory is linked to the `dev-secret-agent` project; run the ingest with:
 agentsecrets env -- python3 scotus_ingest.py
 ```
 
-Or, with the token already in your environment by any other means:
-
-```bash
-export COURTLISTENER_API_TOKEN=your_token_here
-python3 scotus_ingest.py
-```
-
 The first successful run writes `scotus_filter/raw_clusters.json` (gitignored),
 after which `--from-cache` reprocesses instantly without any network calls.
 
