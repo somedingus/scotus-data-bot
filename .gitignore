@@ -1,16 +1,23 @@
 # local Claude Code config
 .claude/
+.vscode/
 
 # python
 __pycache__/
 *.pyc
 
-# raw API cache (regenerable; can be large)
-scotus_filter/raw_clusters.json
+# data: raw API dumps + processed staging are local-only / regenerable
+data/
 
-# secrets
+# database artifacts (regenerable; distributed via GitHub Release)
+*.sqlite
+*.sqlite-journal
+*.sqlite.gz
+SHA256SUMS
+
+# secrets — never commit the CourtListener token
 *.token
 .env
 
-# bulk opinion text (regenerable via fetch_text.py)
-scotus_filter/fulltext/
+# pytest
+.pytest_cache/
