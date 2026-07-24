@@ -1,5 +1,6 @@
 # SCOTUS corpus ETL — common tasks.
-# Network stages need a token: prefix with `agentsecrets env --` (e.g. `make ingest`).
+# Network stages need a token: prefix with `agentsecrets env --`
+# (e.g. `agentsecrets env -- python -m src.pipeline --stage extract`).
 
 # Use the project venv's Python automatically when it exists (no `activate` needed),
 # else fall back to python3. Override with `make <target> PY=/path/to/python`.
@@ -56,7 +57,7 @@ dist:
 # The .sqlite corpus is gitignored, so the Release is how the built database is distributed.
 release: dist
 	gh release create $(VERSION) "$(DB).gz" "$(dir $(DB))SHA256SUMS" \
-		--title "SCOTUS corpus 1790-1820 ($(VERSION))" \
+		--title "SCOTUS corpus, U.S. Reports vols 2-18, 1791-1820 ($(VERSION))" \
 		--notes-file RELEASE_NOTES.md
 
 clean:
