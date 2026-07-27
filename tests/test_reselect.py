@@ -20,22 +20,6 @@ def _opinion(oid=1, cid=1, type="010combined", **sources):
     return row
 
 
-# ---- is_ocr_dirty ------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "text, dirty",
-    [
-        ("a clean modern opinion of the court", False),
-        ("the ■ glyph is a replacement char", True),  # replacement glyph
-        ("the juftice delivered the opinion", True),  # long-s token
-        ("2d and 3d are correct period ordinals", False),  # must NOT flag legit ordinals
-    ],
-)
-def test_is_ocr_dirty(text, dirty):
-    assert reselect.is_ocr_dirty(text) is dirty
-
-
 # ---- select_source (priority) ------------------------------------------------
 
 
@@ -45,25 +29,27 @@ def test_prefers_lawbox_over_everything():
         source_xml_harvard="dirty juftice text",
         source_html="apparatus bundled",
     )
-    assert reselect.select_source(op) == ("source_html_lawbox", False)
+    assert reselect.select_source(op) == "source_html_lawbox"
 
 
 def test_prefers_harvard_over_html_when_no_lawbox():
-    # opinion-only-first: dirty-but-opinion-only harvard beats clean-but-apparatus html
+    # opinion-only-first: OCR-degraded but opinion-only harvard beats clean-but-apparatus
+    # html -- correct scope outranks surface cleanliness, and the stage makes no judgment
+    # about the OCR either way
     op = _opinion(source_xml_harvard="the juftice faid", source_html="clean apparatus text")
-    field, dirty = reselect.select_source(op)
-    assert field == "source_xml_harvard" and dirty is True
+    assert reselect.select_source(op) == "source_xml_harvard"
 
 
 def test_falls_back_to_html_then_citations():
-    assert reselect.select_source(_opinion(source_html="x"))[0] == "source_html"
-    assert reselect.select_source(_opinion(source_html_with_citations="x"))[0] == (
-        "source_html_with_citations"
+    assert reselect.select_source(_opinion(source_html="x")) == "source_html"
+    assert (
+        reselect.select_source(_opinion(source_html_with_citations="x"))
+        == "source_html_with_citations"
     )
 
 
 def test_no_source_returns_none():
-    assert reselect.select_source(_opinion()) == (None, False)
+    assert reselect.select_source(_opinion()) is None
 
 
 def test_build_selections_carries_type():
@@ -73,7 +59,7 @@ def test_build_selections_carries_type():
     ]
     by_id = {s.opinion_id: s for s in reselect.build_selections(ops)}
     assert by_id[1].chosen_source == "source_html_lawbox" and by_id[1].type == "010combined"
-    assert by_id[2].chosen_source == "source_xml_harvard" and by_id[2].is_ocr_dirty is True
+    assert by_id[2].chosen_source == "source_xml_harvard"
 
 
 # ---- round trip --------------------------------------------------------------

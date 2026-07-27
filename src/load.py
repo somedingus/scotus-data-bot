@@ -20,9 +20,12 @@ What ships, and why:
   corpus opinions; elsewhere it is NULL (missing = NULL, never '').
 - No raw source text: the Release-distributed raw mirror (pinned by CHECKSUMS) is the
   audit trail. Source structure ships as offset spans into ``clean_text`` — the
-  ``page_breaks`` table (reporter pagination) and the ``ocr_suspects`` table (flagged
-  spots, normalized from the cleaner's JSON) — with ``chosen_source`` and
+  ``page_breaks`` table (reporter pagination) — with ``chosen_source`` and
   ``clean_version`` pinning the deterministic derivation.
+- No OCR metadata. Locating OCR damage belongs to the OCR application, which owns
+  detection and evaluation and emits occurrence records carrying evidence, confidence,
+  and provenance. Until it can do so, nothing here asserts that a given span is
+  corrupt: a bare token flag is a claim about a *word*, not about an *occurrence*.
 """
 
 import json
@@ -134,7 +137,6 @@ DDL = [
         is_ocr_extracted INTEGER,
         ordering_key     INTEGER,
         chosen_source    TEXT,
-        is_ocr_dirty     INTEGER,
         clean_text       TEXT,
         clean_version    INTEGER
     )""",
@@ -146,15 +148,6 @@ DDL = [
         page_label  TEXT,
         char_offset INTEGER NOT NULL,
         anchor      TEXT,
-        PRIMARY KEY (opinion_id, ordinal)
-    )""",
-    # OCR-suspect spots as offset spans into clean_text (normalized from the cleaner's
-    # JSON so they are queryable; input to the future OCR-correction stage).
-    """CREATE TABLE ocr_suspects (
-        opinion_id  INTEGER NOT NULL REFERENCES opinions(opinion_id),
-        ordinal     INTEGER NOT NULL,
-        char_offset INTEGER NOT NULL,
-        token       TEXT NOT NULL,
         PRIMARY KEY (opinion_id, ordinal)
     )""",
     """CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)""",
@@ -259,15 +252,14 @@ def _load_opinions(staging, out):
     them (the corpus opinions) — NULL elsewhere, never ''."""
     rows = staging.execute(
         "SELECT o.opinion_id, o.cluster_id, o.type, o.author, o.is_ocr_extracted, "
-        "o.ordering_key, src.chosen_source, src.is_ocr_dirty, cl.clean_text, "
-        "cl.clean_version "
+        "o.ordering_key, src.chosen_source, cl.clean_text, cl.clean_version "
         "FROM stg_opinions o "
         "LEFT JOIN stg_opinion_source src USING (opinion_id) "
         "LEFT JOIN stg_opinion_clean cl USING (opinion_id) "
         "ORDER BY o.opinion_id"
     ).fetchall()
-    out.executemany("INSERT INTO opinions VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
-    n_corpus = sum(1 for row in rows if row[8] is not None)
+    out.executemany("INSERT INTO opinions VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    n_corpus = sum(1 for row in rows if row[7] is not None)
     return len(rows), n_corpus
 
 
@@ -277,20 +269,6 @@ def _load_page_breaks(staging, out):
         "FROM stg_page_break ORDER BY opinion_id, ordinal"
     ).fetchall()
     out.executemany("INSERT INTO page_breaks VALUES (?,?,?,?,?)", rows)
-    return len(rows)
-
-
-def _load_ocr_suspects(staging, out):
-    """Normalize the cleaner's ocr_suspect JSON ({count, hits:[{offset, token}]}) into
-    queryable offset-span rows."""
-    rows = []
-    for opinion_id, payload in staging.execute(
-        "SELECT opinion_id, ocr_suspect FROM stg_opinion_clean "
-        "WHERE ocr_suspect IS NOT NULL ORDER BY opinion_id"
-    ):
-        for ordinal, hit in enumerate(json.loads(payload)["hits"], 1):
-            rows.append((opinion_id, ordinal, hit["offset"], hit["token"]))
-    out.executemany("INSERT INTO ocr_suspects VALUES (?,?,?,?)", rows)
     return len(rows)
 
 
@@ -340,7 +318,6 @@ def build_db(
             n_citations, n_citation_dupes_dropped = _load_citations(staging, out)
             n_opinions, n_corpus_opinions = _load_opinions(staging, out)
             n_page_breaks = _load_page_breaks(staging, out)
-            n_ocr_suspects = _load_ocr_suspects(staging, out)
             _build_fts(out)
             n_decisions = out.execute("SELECT count(*) FROM scotus_decisions").fetchone()[0]
             status_counts = dict(
@@ -365,7 +342,6 @@ def build_db(
                 "n_citations": n_citations,
                 "n_citation_dupes_dropped": n_citation_dupes_dropped,
                 "n_page_breaks": n_page_breaks,
-                "n_ocr_suspects": n_ocr_suspects,
             }
             _write_meta(staging, out, counts)
             out.commit()

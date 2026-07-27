@@ -19,9 +19,8 @@ sqlite3 data/processed/scotus.sqlite      # ad-hoc SQL
 |---|---|---|
 | `clusters` | 1,120 | every cluster, with the stage verdicts (`is_scotus` + `scope_evidence`, `dedup_role` + `dup_of` + `dup_method`) and the terminal `corpus_status` |
 | `citations` | 3,596 | structured parallel cites (`reporter, volume, page, type`) |
-| `opinions` | 1,160 | every opinion row (`type`, `author`, `ordering_key`); the 674 corpus opinions also carry `chosen_source`, `is_ocr_dirty`, `clean_text`, `clean_version` |
+| `opinions` | 1,160 | every opinion row (`type`, `author`, `ordering_key`); the 674 corpus opinions also carry `chosen_source`, `clean_text`, `clean_version` |
 | `page_breaks` | 3,985 | reporter page boundaries within `clean_text`: `ordinal, page_label, char_offset, anchor` |
-| `ocr_suspects` | 2,813 | OCR-suspect spots as offset spans into `clean_text`: `ordinal, char_offset, token` — input to the future OCR-correction stage |
 | `meta` | — | build provenance (version, timestamp, git commit, staging lineage) + all counts |
 | `scotus_decisions` (view) | **648** | the corpus: `corpus_status = 'included'` |
 | `duplicate_clusters` (view) | 227 | each duplicate joined to its canonical's name and cite |
@@ -47,11 +46,18 @@ Downstream analysis should select from `scotus_decisions` (or filter
 `clean_text` is a deterministic render of each corpus opinion's **chosen source field**
 (`chosen_source`; picked by the reselect stage for fidelity) through `src/clean.py`:
 star-pagination markers are removed (captured in `page_breaks` instead), whitespace/Unicode is
-normalized (NFC), and content — footnote bodies, captions, citations — is preserved. **No OCR
-is corrected**: suspect spots are located, not fixed, in `ocr_suspects` (`char_offset` indexes
-into `clean_text`). `clean_version` tracks the cleaning logic. Raw source text is not shipped —
-the verbatim raw mirror (a Release asset pinned by committed checksums) is the audit trail,
-and the offset spans plus `chosen_source`/`clean_version` pin the derivation.
+normalized (NFC), and content — footnote bodies, captions, citations — is preserved.
+`clean_version` tracks the cleaning logic. Raw source text is not shipped — the verbatim raw
+mirror (a Release asset pinned by committed checksums) is the audit trail, and the page-break
+offset spans plus `chosen_source`/`clean_version` pin the derivation.
+
+**No OCR handling.** The text is rendered as the source has it, errors included; the `■`
+unreadable-character glyph is preserved verbatim because it marks missing text in the source.
+The database asserts nothing about which spans are OCR-corrupt. A previous release shipped an
+`ocr_suspects` table built from a token list, but a bare token flag is a claim about a *word*,
+not about an *occurrence* — 86% of its rows were ordinary correct words such as "defendant".
+Detection now belongs to the OCR application, which owns detection and evaluation together and
+will publish occurrence records only when each carries its own evidence and provenance.
 
 ```sql
 -- reconstruct which reporter page a search hit falls on
@@ -91,9 +97,8 @@ WHERE c.case_name LIKE '%ulloch%' AND o.clean_text IS NOT NULL;
 SELECT cluster_id, case_name, canonical_case_name, canonical_us_cite
 FROM duplicate_clusters LIMIT 10;
 
--- OCR-suspect spots for one opinion, with surrounding context
-SELECT s.char_offset, s.token,
-       substr(o.clean_text, max(1, s.char_offset - 30), 70) AS context
-FROM ocr_suspects s JOIN opinions o USING (opinion_id)
-WHERE o.opinion_id = 84800 ORDER BY s.ordinal;
+-- which source field a decision's text was rendered from
+SELECT c.case_name, o.chosen_source, o.clean_version, length(o.clean_text) AS chars
+FROM opinions o JOIN scotus_decisions c USING (cluster_id)
+WHERE o.clean_text IS NOT NULL ORDER BY chars DESC LIMIT 10;
 ```

@@ -20,11 +20,10 @@ Cleaning must therefore be:
 
 The reselect stage picks one retained source field per opinion by fidelity
 (`html_lawbox` → `xml_harvard` → `html` → `html_with_citations`); the clean stage renders that
-chosen field through `clean.clean_opinion`, producing per opinion: `clean_text`,
-`page_breaks` (reporter pagination as character-offset spans), and `ocr_suspect` spots
-(located, never corrected). The load stage ships those — the shipped database carries no raw
-source text; the raw mirror plus `chosen_source` + `clean_version` pin the derivation, and the
-offset spans preserve the source structure.
+chosen field through `clean.clean_opinion`, producing per opinion: `clean_text` and
+`page_breaks` (reporter pagination as character-offset spans). The load stage ships those — the
+shipped database carries no raw source text; the raw mirror plus `chosen_source` +
+`clean_version` pin the derivation, and the offset spans preserve the source structure.
 
 ## 3. The cleaner (what it does and why)
 
@@ -42,14 +41,41 @@ offset spans preserve the source structure.
 - **Normalization:** `\r`→`\n`, strip control chars (keep `\t`/`\n`), collapse whitespace,
   **NFC** — no ASCII folding (that lives in the FTS tokenizer:
   `unicode61 remove_diacritics 2`; the stored column stays strict NFC).
-- **No OCR correction.** The suspect detector LOCATES a curated, precision-first set of
-  whole-word tokens plus every `■` unreadable-char glyph; `■` stays visible in `clean_text`
-  (missing-text signal) and every spot ships as an offset span in the `ocr_suspects` table.
-  Correction is a future stage of its own (propose → review → execute), never an in-place edit.
+- **No OCR handling at all.** The source's errors are rendered as the source has them. The `■`
+  unreadable-char glyph stays visible in `clean_text` because it marks missing text — a
+  rendering decision, not a judgment. See §4.
 - `clean_version` stamps every derivation; bumping it regenerates `clean_text` and all offsets
   together, so spans can never silently drift against the text they index.
 
-## 4. Reporter apparatus (separate asset)
+## 4. Why OCR detection is not in the cleaner
+
+The cleaner once carried a curated token list and emitted "OCR-suspect" spots, published as an
+`ocr_suspects` table; the reselect stage independently carried a second list for an opinion-level
+`is_ocr_dirty` flag. Both have been withdrawn.
+
+**What went wrong.** The lists asserted *lexical* suspicion — "this word is sometimes an OCR
+error" — but each published row read as an unqualified claim about a specific occurrence, and the
+schema had no column to weaken it. Measured on the shipped artifact, **2,433 of 2,813 rows
+(86.5%) were `defendant`, `defendants`, or `bad`**, every sampled one correct English.
+`defendant` could not have been an OCR error at all: the intended long-s transform maps it to
+"desendant", not a word. The entries had been gathered by eyeballing "contains an `f`" rather
+than by deriving a token from a correction. With no module owning the concept, the two lists also
+drifted apart and each acquired its own version of the same defect.
+
+**The structural problem.** OCR correction was deliberately deferred, but detection stayed behind
+as a passenger in two stages that neither used nor owned it: `_find_ocr_suspects` ran on the
+*finished* `clean_text`, and `is_ocr_dirty` influenced no source choice. Neither had a consumer
+inside the pipeline. A list embedded in a host stage can only ever make a claim about a word;
+distinguishing a real error from correct usage requires evidence about the occurrence —
+parallel-source alignment, corpus context, human review — which is the OCR application's job.
+
+**The rule going forward.** Evidentiary suspicion, not lexical: an occurrence is published only
+when it carries its own reason, evidence, confidence or abstention, offsets, and versioned
+provenance. Until the OCR application can produce that, the artifact asserts nothing about OCR
+damage. Nothing is lost — the raw mirror and every retained source field remain available, so
+detection can be recomputed from primary data whenever the evidence layer exists.
+
+## 5. Reporter apparatus (separate asset)
 
 The early reporters printed substantial front matter that is not part of any opinion. It is
 captured raw, at the cluster level, in a standalone `scotus-apparatus.sqlite`
@@ -76,7 +102,7 @@ So `headmatter` is the raw container; the others are components carved from the 
 pre-opinion matter — the container and its parsed pieces, not strict substrings. Storing all
 fields keeps both representations for later reconciliation.
 
-## 5. Prior art & best practices
+## 6. Prior art & best practices
 
 Recent efforts that clean this exact data (CAP + CourtListener) independently confirm the
 approach; no surveyed rule contradicts it.
@@ -89,8 +115,9 @@ approach; no surveyed rule contradicts it.
 - **Keep headmatter separate from the opinion body** (CAP's native `casebody` schema; COLD
   Cases) → the separate apparatus asset.
 - **"Minimize preprocessing; correct only obvious OCR errors"** (CAP/free-law; Pile of Law).
-  This project goes further — flag, don't fix: the stricter stance is deliberate for a
-  foundational dataset.
+  This project goes further: the cleaner neither corrects nor flags, and any claim about OCR
+  damage must come from the OCR application with per-occurrence evidence (§4). The stricter
+  stance is deliberate for a foundational dataset.
 - **Unicode + whitespace normalization** — adopted (NFC + collapse).
 
 **Non-goal: text-level minhash near-dedup.** That matters for web-scale corpora full of

@@ -36,12 +36,6 @@ SELECT CASE
        count(*) AS decisions
 FROM scotus_decisions GROUP BY 1 ORDER BY min(us_volume);
 
-SELECT '== OCR-SUSPECT SURFACE (input to the future OCR stage) ==' AS section;
-SELECT
-  (SELECT count(DISTINCT opinion_id) FROM ocr_suspects)                       AS flagged_opinions,
-  (SELECT count(*) FROM ocr_suspects)                                         AS flagged_spots,
-  (SELECT count(*) FROM opinions WHERE is_ocr_dirty=1)                        AS ocr_dirty_opinions;
-
 SELECT '== LONGEST & SHORTEST CORPUS OPINIONS ==' AS section;
 SELECT c.case_name, c.us_cite, length(o.clean_text) AS chars
 FROM opinions o JOIN clusters c ON c.cluster_id=o.cluster_id

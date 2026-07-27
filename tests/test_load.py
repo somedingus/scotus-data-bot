@@ -17,7 +17,7 @@ from src import load
 
 def _make_staging(tmp_path):
     """A minimal but complete staging DB: one corpus decision with two opinions
-    (one with page breaks + OCR flags), its labeled duplicate, one scope-dropped
+    (one with page breaks), its labeled duplicate, one scope-dropped
     cluster, and one vol-19 buffer cluster."""
     path = str(tmp_path / "staging.sqlite")
     conn = sqlite3.connect(path)
@@ -40,9 +40,9 @@ def _make_staging(tmp_path):
           us_volume INTEGER, us_page TEXT, case_name TEXT, scdb_id TEXT,
           dedup_role TEXT, dup_of INTEGER, dup_method TEXT);
         CREATE TABLE stg_opinion_source (opinion_id INTEGER PRIMARY KEY,
-          cluster_id INTEGER, type TEXT, chosen_source TEXT, is_ocr_dirty INTEGER);
+          cluster_id INTEGER, type TEXT, chosen_source TEXT);
         CREATE TABLE stg_opinion_clean (opinion_id INTEGER PRIMARY KEY,
-          cluster_id INTEGER, clean_text TEXT, clean_version INTEGER, ocr_suspect TEXT);
+          cluster_id INTEGER, clean_text TEXT, clean_version INTEGER);
         CREATE TABLE stg_page_break (opinion_id INTEGER, ordinal INTEGER,
           page_label TEXT, char_offset INTEGER, anchor TEXT);
         CREATE TABLE stg_meta (key TEXT PRIMARY KEY, value TEXT);
@@ -165,22 +165,19 @@ def _make_staging(tmp_path):
     # not the dropped cluster; the vol-19 buffer is corpus-excluded by the view, but
     # its text pipeline runs — mirror that: cluster 4's opinion is cleaned too)
     conn.executemany(
-        "INSERT INTO stg_opinion_source VALUES (?,?,?,?,?)",
+        "INSERT INTO stg_opinion_source VALUES (?,?,?,?)",
         [
-            (10, 1, "020lead", "source_html_lawbox", 0),
-            (11, 1, "030concurrence", "source_html_lawbox", 0),
-            (14, 4, "010combined", "source_html_lawbox", 0),
+            (10, 1, "020lead", "source_html_lawbox"),
+            (11, 1, "030concurrence", "source_html_lawbox"),
+            (14, 4, "010combined", "source_html_lawbox"),
         ],
     )
-    suspect = json.dumps(
-        {"count": 2, "hits": [{"offset": 0, "token": "tbe"}, {"offset": 9, "token": "■"}]}
-    )
     conn.executemany(
-        "INSERT INTO stg_opinion_clean VALUES (?,?,?,?,?)",
+        "INSERT INTO stg_opinion_clean VALUES (?,?,?,?)",
         [
-            (10, 1, "tbe lead ■ text of the opinion", 2, suspect),
-            (11, 1, "concurrence text", 2, None),
-            (14, 4, "buffer text", 2, None),
+            (10, 1, "tbe lead ■ text of the opinion", 2),
+            (11, 1, "concurrence text", 2),
+            (14, 4, "buffer text", 2),
         ],
     )
     conn.execute(
@@ -353,15 +350,10 @@ def test_text_only_on_clean_opinions(built):
 
 
 def test_structure_ships_as_offset_spans(built):
-    conn, counts = built
+    conn, _ = built
     assert conn.execute(
         "SELECT ordinal, page_label, char_offset, anchor FROM page_breaks WHERE opinion_id = 10"
     ).fetchall() == [(1, "138", 4, "lead")]
-    assert conn.execute(
-        "SELECT ordinal, char_offset, token FROM ocr_suspects WHERE opinion_id = 10 "
-        "ORDER BY ordinal"
-    ).fetchall() == [(1, 0, "tbe"), (2, 9, "■")]
-    assert counts["n_ocr_suspects"] == 2
 
 
 def test_citations_parsed_and_exact_dupes_collapsed(built):
@@ -535,14 +527,6 @@ def test_referential_integrity(db):
         )
         == 0
     )
-    assert (
-        _one(
-            db,
-            "SELECT count(*) FROM ocr_suspects s LEFT JOIN opinions o USING (opinion_id) "
-            "WHERE o.opinion_id IS NULL",
-        )
-        == 0
-    )
 
 
 def test_every_decision_has_text(db):
@@ -566,14 +550,6 @@ def test_offset_spans_index_into_clean_text(db):
         )
         == 0
     )
-    assert (
-        _one(
-            db,
-            "SELECT count(*) FROM ocr_suspects s JOIN opinions o USING (opinion_id) "
-            "WHERE s.char_offset < 0 OR s.char_offset >= length(o.clean_text)",
-        )
-        == 0
-    )
 
 
 def test_clean_version_is_uniform(db):
@@ -584,6 +560,27 @@ def test_clean_version_is_uniform(db):
         )
         == 1
     )
+
+
+def test_no_ocr_metadata_ships(db):
+    """The artifact asserts nothing about OCR damage.
+
+    A bare token flag is a claim about a *word*, not about an occurrence: the detector
+    that produced the previous ocr_suspects table had no per-occurrence evidence, and
+    86% of its rows were ordinary correct words. OCR detection now belongs to the OCR
+    application, which emits occurrence records carrying evidence and provenance; until
+    then the artifact carries no OCR columns or tables. This guard keeps the residue
+    from silently returning."""
+    tables = {
+        row[0]
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+    }
+    assert "ocr_suspects" not in tables
+    columns = {row[1] for row in db.execute("PRAGMA table_info(opinions)")}
+    assert "is_ocr_dirty" not in columns
+    # is_ocr_extracted is CourtListener's own provenance field and legitimately stays
+    assert "is_ocr_extracted" in columns
+    assert "n_ocr_suspects" not in dict(db.execute("SELECT key, value FROM meta"))
 
 
 def test_no_empty_string_sentinels(db):

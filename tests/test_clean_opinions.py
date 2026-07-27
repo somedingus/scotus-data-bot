@@ -41,7 +41,7 @@ def test_run_clean_writes_both_tables(tmp_path):
     )
     conn.execute(
         "CREATE TABLE stg_opinion_source (opinion_id INTEGER PRIMARY KEY, cluster_id INTEGER, "
-        "type TEXT, chosen_source TEXT, is_ocr_dirty INTEGER)"
+        "type TEXT, chosen_source TEXT)"
     )
     conn.execute(
         "INSERT INTO stg_opinions (opinion_id, cluster_id, source_html_lawbox) "
@@ -49,7 +49,7 @@ def test_run_clean_writes_both_tables(tmp_path):
         '<span class="star-pagination" label="5">*5</span><p>more</p>\')'
     )
     conn.execute(
-        "INSERT INTO stg_opinion_source VALUES (10, 1, '010combined', 'source_html_lawbox', 0)"
+        "INSERT INTO stg_opinion_source VALUES (10, 1, '010combined', 'source_html_lawbox')"
     )
     conn.commit()
     conn.close()

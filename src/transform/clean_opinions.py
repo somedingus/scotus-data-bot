@@ -3,7 +3,7 @@
 reselect chose one source-text field per opinion (stg_opinion_source). This stage
 runs that chosen text through the shared deterministic cleaner (src/clean.py,
 ``clean_opinion``) and writes the results: stg_opinion_clean (clean_text +
-clean_version + ocr_suspect) and stg_page_break (the star-pagination map).
+clean_version) and stg_page_break (the star-pagination map).
 
 The cleaner is reused unchanged -- it renders both the HTML and Harvard-XML dialects,
 strips star-pagination into page breaks, normalizes to NFC, and does NOT correct OCR
@@ -25,7 +25,6 @@ class OpinionClean(NamedTuple):
     opinion_id: int
     cluster_id: int
     clean_text: str
-    ocr_suspect: str | None
     page_breaks: list
 
 
@@ -58,13 +57,12 @@ def build_clean_opinions(chosen_texts: list[tuple]) -> list[OpinionClean]:
     """Clean each opinion's chosen text (pure apart from the shared cleaner)."""
     results = []
     for opinion_id, cluster_id, text in chosen_texts:
-        clean_text, page_breaks, ocr_suspect = clean.clean_opinion(text)
+        clean_text, page_breaks = clean.clean_opinion(text)
         results.append(
             OpinionClean(
                 opinion_id=opinion_id,
                 cluster_id=cluster_id,
                 clean_text=clean_text,
-                ocr_suspect=clean.ocr_suspect_json(ocr_suspect),
                 page_breaks=page_breaks,
             )
         )
@@ -80,7 +78,7 @@ def write_clean_tables(staging_db_path: str, cleaned: list[OpinionClean]) -> Non
         conn.execute(
             "CREATE TABLE stg_opinion_clean ("
             "opinion_id INTEGER PRIMARY KEY, cluster_id INTEGER, clean_text TEXT NOT NULL, "
-            "clean_version INTEGER NOT NULL, ocr_suspect TEXT)"
+            "clean_version INTEGER NOT NULL)"
         )
         conn.execute(
             "CREATE TABLE stg_page_break ("
@@ -88,11 +86,8 @@ def write_clean_tables(staging_db_path: str, cleaned: list[OpinionClean]) -> Non
             "anchor TEXT, PRIMARY KEY (opinion_id, ordinal))"
         )
         conn.executemany(
-            "INSERT INTO stg_opinion_clean VALUES (?, ?, ?, ?, ?)",
-            [
-                (c.opinion_id, c.cluster_id, c.clean_text, clean.CLEAN_VERSION, c.ocr_suspect)
-                for c in cleaned
-            ],
+            "INSERT INTO stg_opinion_clean VALUES (?, ?, ?, ?)",
+            [(c.opinion_id, c.cluster_id, c.clean_text, clean.CLEAN_VERSION) for c in cleaned],
         )
         conn.executemany(
             "INSERT INTO stg_page_break VALUES (?, ?, ?, ?, ?)",

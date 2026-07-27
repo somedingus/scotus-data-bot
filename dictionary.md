@@ -80,8 +80,7 @@ outside the 674 corpus opinions.
 | `is_ocr_extracted` | INTEGER | mapped | `opinions.extracted_by_ocr` | boolean → 0/1 |
 | `ordering_key` | INTEGER | direct | `opinions.ordering_key` | |
 | `chosen_source` | TEXT | derived | reselect | which retained source field the text derives from, by fidelity priority `source_html_lawbox` → `source_xml_harvard` → `source_html` → `source_html_with_citations` |
-| `is_ocr_dirty` | INTEGER | derived | reselect | 1 when the chosen text carries OCR markers (53 opinions, mostly Dallas long-s Harvard) |
-| `clean_text` | TEXT | derived | clean | deterministic render of the chosen source via `src/clean.py`; no OCR correction |
+| `clean_text` | TEXT | derived | clean | deterministic render of the chosen source via `src/clean.py`; no OCR handling — the source's errors are rendered as-is |
 | `clean_version` | INTEGER | derived | clean | bump ⇒ `clean_text` and all offsets regenerate |
 
 ### `page_breaks` (3,985 rows)
@@ -96,18 +95,20 @@ Reporter page boundaries within `clean_text`, derived by `clean.clean_opinion`.
 | `char_offset` | INTEGER | derived | index into `clean_text` where that page begins (valid for the row's `clean_version`) |
 | `anchor` | TEXT | derived | first ~6 words after the break — human/cross-version relocation aid |
 
-### `ocr_suspects` (2,813 rows)
+### No OCR metadata
 
-OCR-suspect spots as offset spans, normalized from the cleaner's per-opinion JSON. Curated
-whole-word tokens plus every `■` unreadable-glyph char; located, never corrected. Input to the
-future OCR-correction stage.
+The database carries no claim about which spans are OCR-corrupt — no `ocr_suspects` table and no
+`is_ocr_dirty` column. An earlier release shipped both, produced by hardcoded token lists inside
+the cleaner and the reselect stage. A bare token flag can only assert that a *word* is sometimes
+misread, never that a given *occurrence* is wrong, and the published table bore that out: 86% of
+its rows were the ordinary words "defendant", "defendants", and "bad" in correct usage.
 
-| DB column | DB type | Origin | Notes |
-|---|---|---|---|
-| `opinion_id` | INTEGER | direct | → `opinions.opinion_id`; part of PK |
-| `ordinal` | INTEGER | derived | 1-based, in document order; part of PK |
-| `char_offset` | INTEGER | derived | index into `clean_text` |
-| `token` | TEXT | derived | the flagged token (or `■`) |
+Detection now belongs to the OCR application, which owns detection and evaluation together and
+publishes occurrence records only when each carries its own evidence, confidence, offsets, and
+versioned provenance. Nothing is lost in the interim: the raw mirror and every retained source
+field remain available, so detection can be recomputed from primary data at any time.
+`opinions.is_ocr_extracted` is unaffected — that is CourtListener's own provenance field
+recording how *they* produced the text, not a judgment about its quality.
 
 ### `meta`, views, FTS
 

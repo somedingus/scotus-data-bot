@@ -2,7 +2,7 @@
 
 `clean_opinion(raw_html)` renders an opinion's stored `raw_html` (CourtListener
 `html_with_citations`, in either the div-HTML or the Harvard-XML dialect) into a canonical
-`clean_text`, and returns alongside it a page-break map and an OCR-suspect locator. It is:
+`clean_text`, and returns alongside it a page-break map. It is:
 
 - deterministic — pure functions, same input -> same output; no LLM/statistical passes;
 - conservative — the ONLY content dropped is star-pagination page markers (captured instead as page
@@ -10,14 +10,19 @@
   *bracketed* inline text form (`[*626`, `*625]`). Bare unbracketed `*54` and all other original
   content — footnote bodies and their inline ref markers, the case caption, citations — is kept;
 - non-destructive — `raw_html` + `plain_text` are untouched; this is a derived column;
-- no OCR correction — OCR-suspect tokens are LOCATED (`ocr_suspect`), never rewritten.
+- no OCR handling of any kind — the text is rendered as the source has it, errors included.
 
 Normalization: `\r`->`\n`, control chars stripped (except `\n`/`\t`), whitespace collapsed, Unicode
 NFC. No ASCII folding in the canonical column (that lives in the FTS tokenizer instead). The `■`
-OCR "unreadable character" glyph is KEPT (it marks missing text) and flagged in `ocr_suspect`.
+OCR "unreadable character" glyph is KEPT verbatim — it marks missing text in the source, and
+preserving it is a rendering decision, not a judgment about the text.
+
+Locating or correcting OCR damage is deliberately NOT this module's concern: it belongs to the OCR
+application, which owns detection and evaluation end to end and emits occurrence records carrying
+their own evidence and provenance. A word list embedded here could only assert that a *token* is
+sometimes suspect — never that a given occurrence is wrong — so it does not belong in the cleaner.
 """
 
-import json
 import re
 import unicodedata
 from html.parser import HTMLParser
@@ -58,78 +63,6 @@ _S0, _S1 = "", ""
 # *bracketed* inline marker (`[*626`, `*625]`). Bare unbracketed `*54` is deliberately NOT matched:
 # too ambiguous (footnote asterisk vs. real content) — so it is preserved verbatim.
 _BREAK_RE = re.compile(_S0 + r"(?P<sidx>\d+)" + _S1 + r"|\[\*(?P<opn>\d+)\]?|\*(?P<cls>\d+)\]")
-
-# Curated, whole-word OCR-suspect tokens (precision over recall — see design doc §5). Two profiled
-# classes: long-s mis-OCR'd as 'f' (juſtice -> juftice) and h->b (the -> tbe). Deliberately a
-# high-confidence starter set; the goal is to LOCATE representative spans, not catch every error.
-_OCR_TOKENS = frozenset(
-    {
-        # long-s ('f' where 's' belongs) — unambiguous non-words
-        "juftice",
-        "juftices",
-        "firft",
-        "muft",
-        "fhall",
-        "fuch",
-        "thefe",
-        "thofe",
-        "becaufe",
-        "caufe",
-        "conftitution",
-        "prefent",
-        "reafon",
-        "reafons",
-        "perfon",
-        "perfons",
-        "fervice",
-        "againft",
-        "moft",
-        "juft",
-        "laft",
-        "poffeffion",
-        "poffeffed",
-        "courfe",
-        "confent",
-        "defendant",
-        "defendants",
-        "faid",
-        "fame",
-        "fome",
-        "fubject",
-        "fuit",
-        "ftate",
-        "ftates",
-        "fupreme",
-        "houfe",
-        "ufe",
-        "ufed",
-        "purfuant",
-        "purpofe",
-        "increafe",
-        "expreffed",
-        # h->b confusion — unambiguous non-words
-        "tbe",
-        "tbat",
-        "tbis",
-        "tbey",
-        "tbem",
-        "wbich",
-        "wben",
-        "wbere",
-        "witb",
-        "bad",
-        "bave",
-        "bim",
-        "bis",
-        "ber",
-        "bere",
-        "tbeir",
-        "tbere",
-        "otber",
-        "wbo",
-    }
-)
-_TOKEN_RE = re.compile(r"[A-Za-z]+")
 
 
 class _Renderer(HTMLParser):
@@ -187,27 +120,13 @@ def _normalize(s):
     return s.strip()
 
 
-def _find_ocr_suspects(text):
-    """Locate OCR-suspect spots: curated whole-word tokens plus every ``■`` unreadable-char glyph.
-    Returns [{offset, token}] in document order (``■`` kept in clean_text; also flagged here)."""
-    hits = [
-        {"offset": m.start(), "token": m.group(0)}
-        for m in _TOKEN_RE.finditer(text)
-        if m.group(0).lower() in _OCR_TOKENS
-    ]
-    hits += [{"offset": m.start(), "token": "\u25a0"} for m in re.finditer("\u25a0", text)]
-    hits.sort(key=lambda h: h["offset"])
-    return hits
-
-
 def clean_opinion(raw_html):
-    """Return (clean_text, page_breaks, ocr_suspect) for one opinion's raw_html.
+    """Return (clean_text, page_breaks) for one opinion's raw_html.
 
-    page_breaks: list of {ordinal, page_label, char_offset, anchor}; char_offset indexes into the
-    returned clean_text (where the reporter's page begins). ocr_suspect: list of {offset, token}.
-    Both are ordered by position."""
+    page_breaks: list of {ordinal, page_label, char_offset, anchor}, ordered by position;
+    char_offset indexes into the returned clean_text (where the reporter's page begins)."""
     if not raw_html or not raw_html.strip():
-        return "", [], []
+        return "", []
 
     # Defensive: drop any pre-existing sentinel chars from the input so they can't be mistaken for
     # renderer-inserted page-break markers (they are private-use and never legitimate content).
@@ -244,11 +163,4 @@ def clean_opinion(raw_html):
             {"ordinal": ordinal, "page_label": label, "char_offset": off, "anchor": anchor}
         )
 
-    return clean, breaks, _find_ocr_suspects(clean)
-
-
-def ocr_suspect_json(hits):
-    """Serialize ocr_suspect hits for the opinions.ocr_suspect column; None if empty."""
-    if not hits:
-        return None
-    return json.dumps({"count": len(hits), "hits": hits}, separators=(",", ":"))
+    return clean, breaks
