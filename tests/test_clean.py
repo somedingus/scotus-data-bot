@@ -24,6 +24,29 @@ def test_star_pagination_label_parsed_from_text_when_attr_absent():
     assert pbs[0]["page_label"] == "407"
 
 
+@pytest.mark.parametrize(
+    "marker",
+    [
+        '<page-number label="9"/>',
+        '<span class="star-pagination" label="9"/>',
+    ],
+)
+def test_self_closing_page_markers_captured(marker):
+    """Self-closing marker forms produce a page break too (v2 cleaner; none occur in the
+    current mirror, so v1 inputs render identically — the CLEAN_VERSION bump records the
+    algorithm change, not an output change)."""
+    ct, pbs = clean.clean_opinion(f"<p>alpha {marker} beta gamma</p>")
+    assert [p["page_label"] for p in pbs] == ["9"]
+    off = pbs[0]["char_offset"]
+    assert ct[off:].startswith("beta")
+    assert "9" not in ct.replace("beta gamma", "")  # no marker residue in the text
+
+
+def test_self_closing_marker_without_label_yields_none_label():
+    _, pbs = clean.clean_opinion("<p>alpha <page-number/> beta</p>")
+    assert len(pbs) == 1 and pbs[0]["page_label"] is None
+
+
 def test_page_number_element_captured():
     raw = '<opinion><p>foo <page-number label="2">*2</page-number> bar</p></opinion>'
     ct, pbs = clean.clean_opinion(raw)

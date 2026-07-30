@@ -177,11 +177,20 @@ def _make_staging(tmp_path):
         [
             (10, 1, "tbe lead ■ text of the opinion", 2),
             (11, 1, "concurrence text", 2),
-            (14, 4, "buffer text", 2),
+            # opinion 14 exercises the page-lookup contract: a non-BMP char (𝕆) before the
+            # boundaries proves code-point offsets, and pages '10'/'11' share offset 21
+            # (no rendered text between their markers)
+            (14, 4, "buffer 𝕆 alpha bravo charlie delta echo", 2),
         ],
     )
-    conn.execute(
-        "INSERT INTO stg_page_break VALUES (10, 1, '138', 4, 'lead')",
+    conn.executemany(
+        "INSERT INTO stg_page_break VALUES (?,?,?,?,?)",
+        [
+            (10, 1, "138", 4, "lead"),
+            (14, 1, "9", 9, "alpha bravo"),
+            (14, 2, "10", 21, "charlie delta"),
+            (14, 3, "11", 21, "charlie delta"),
+        ],
     )
     conn.executemany(
         "INSERT INTO stg_meta VALUES (?,?)",
@@ -354,6 +363,46 @@ def test_structure_ships_as_offset_spans(built):
     assert conn.execute(
         "SELECT ordinal, page_label, char_offset, anchor FROM page_breaks WHERE opinion_id = 10"
     ).fetchall() == [(1, "138", 4, "lead")]
+
+
+_PAGE_LOOKUP_SQL = """
+    WITH hit AS (
+        SELECT opinion_id, instr(clean_text, :needle) - 1 AS pos
+        FROM opinions
+        WHERE opinion_id = :opinion_id AND instr(clean_text, :needle) > 0
+    )
+    SELECT pb.page_label
+    FROM page_breaks pb JOIN hit USING (opinion_id)
+    WHERE pb.char_offset <= hit.pos
+    ORDER BY pb.char_offset DESC, pb.ordinal DESC
+    LIMIT 1
+"""
+
+
+def _lookup_page(conn, opinion_id, needle):
+    row = conn.execute(_PAGE_LOOKUP_SQL, {"opinion_id": opinion_id, "needle": needle}).fetchone()
+    return row[0] if row else None
+
+
+def test_page_lookup_contract(built):
+    """The documented page-lookup recipe: zero-based code-point offsets, boundaries not
+    spans, shared offsets resolved by ordinal, instr()'s one-based result corrected."""
+    conn, _ = built
+    # non-BMP proof: SQLite instr() minus 1 equals the Python code-point index even
+    # after an astral char (𝕆), so the stored offsets and SQL lookups share coordinates
+    text = conn.execute("SELECT clean_text FROM opinions WHERE opinion_id = 14").fetchone()[0]
+    assert conn.execute(
+        "SELECT instr(clean_text, 'bravo') - 1 FROM opinions WHERE opinion_id = 14"
+    ).fetchone()[0] == text.index("bravo")
+    # a hit inside a page's run resolves to that page
+    assert _lookup_page(conn, 14, "bravo") == "9"
+    # a hit exactly AT a shared boundary offset takes the greatest (char_offset, ordinal)
+    assert text.index("charlie") == 21
+    assert _lookup_page(conn, 14, "charlie") == "11"
+    # a missing phrase yields no row (instr() = 0 is excluded, not mapped to offset -1)
+    assert _lookup_page(conn, 14, "no such phrase") is None
+    # text before the first captured marker precedes any known page
+    assert _lookup_page(conn, 14, "buffer") is None
 
 
 def test_citations_parsed_and_exact_dupes_collapsed(built):

@@ -28,8 +28,10 @@ import unicodedata
 from html.parser import HTMLParser
 
 # Bump when the cleaning logic changes: stored in opinions.clean_version so a rebuild is detectable
-# and char_offsets in page_breaks are always interpreted against the matching text.
-CLEAN_VERSION = 1
+# and char_offsets in page_breaks are always interpreted against the matching text. This is an
+# ALGORITHM version — it changes whenever two builds could disagree on any input, even one absent
+# from the current corpus (v2: self-closing page-marker support; no output changed for v1 inputs).
+CLEAN_VERSION = 2
 
 # Block-level tags that should produce a line break in the rendered text.
 _BLOCK = {
@@ -76,12 +78,19 @@ class _Renderer(HTMLParser):
         self._pb_tag = None  # tag name of the page-break element currently open (else None)
         self._pb_text = ""  # its text content, to parse a label from when the attr is absent
 
+    @staticmethod
+    def _is_page_marker(tag, attrs_dict):
+        classes = (attrs_dict.get("class") or "").split()
+        return (tag == "span" and "star-pagination" in classes) or tag == "page-number"
+
+    def _emit_page_marker(self, label):
+        self.buf.append(f"{_S0}{len(self.labels)}{_S1}")
+        self.labels.append(label)  # may be None -> filled from element text at end
+
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        classes = (a.get("class") or "").split()
-        if (tag == "span" and "star-pagination" in classes) or tag == "page-number":
-            self.buf.append(f"{_S0}{len(self.labels)}{_S1}")
-            self.labels.append(a.get("label"))  # may be None -> filled from text at end
+        if self._is_page_marker(tag, a):
+            self._emit_page_marker(a.get("label"))
             self._pb_tag = tag
             self._pb_text = ""
             return
@@ -89,6 +98,12 @@ class _Renderer(HTMLParser):
             self.buf.append("\n")
 
     def handle_startendtag(self, tag, attrs):
+        a = dict(attrs)
+        if self._is_page_marker(tag, a):
+            # Self-closing marker (<page-number/> / <span class="star-pagination"/>): no
+            # element text exists, so the label attribute is all there is (None stays None).
+            self._emit_page_marker(a.get("label"))
+            return
         if tag in _BLOCK:
             self.buf.append("\n")
 
