@@ -81,11 +81,15 @@ outside the 674 corpus opinions.
 | `ordering_key` | INTEGER | direct | `opinions.ordering_key` | |
 | `chosen_source` | TEXT | derived | reselect | which retained source field the text derives from, by fidelity priority `source_html_lawbox` → `source_xml_harvard` → `source_html` → `source_html_with_citations` |
 | `clean_text` | TEXT | derived | clean | deterministic render of the chosen source via `src/clean.py`; no OCR handling — the source's errors are rendered as-is |
-| `clean_version` | INTEGER | derived | clean | bump ⇒ `clean_text` and all offsets regenerate |
+| `clean_version` | INTEGER | derived | clean | algorithm version of the cleaner; a bump plus re-running reselect → clean → load regenerates `clean_text` and all offsets (the constant alone regenerates nothing) |
 
 ### `page_breaks` (3,985 rows)
 
-Reporter page boundaries within `clean_text`, derived by `clean.clean_opinion`.
+Reporter page boundaries within `clean_text`, derived by `clean.clean_opinion`. Boundary
+records, not spans (a start offset, no end); `char_offset` is a zero-based Unicode code-point
+index; multiple boundaries may share one offset when no rendered text falls between their
+markers (35 such groups, measured); document order is `(char_offset, ordinal)`. Lookup recipe
+and coordinate caveats (`instr()` is one-based): `db/README.md`.
 
 | DB column | DB type | Origin | Notes |
 |---|---|---|---|
@@ -100,12 +104,14 @@ Reporter page boundaries within `clean_text`, derived by `clean.clean_opinion`.
 The database carries no claim about which spans are OCR-corrupt — no `ocr_suspects` table and no
 `is_ocr_dirty` column. An earlier release shipped both, produced by hardcoded token lists inside
 the cleaner and the reselect stage. A bare token flag can only assert that a *word* is sometimes
-misread, never that a given *occurrence* is wrong, and the published table bore that out: 86% of
-its rows were the ordinary words "defendant", "defendants", and "bad" in correct usage.
+misread, never that a given *occurrence* is wrong, and the published table bore that out:
+86.5% of its rows were the tokens "defendant", "defendants", or "bad" (measured); the first two
+cannot arise from the modeled long-s confusion at all, and sampled contexts of the rest showed
+correct usage (sample sizes and method: docs/clean-text-design.md §4).
 
 Detection now belongs to the OCR application, which owns detection and evaluation together and
 publishes occurrence records only when each carries its own evidence, confidence, offsets, and
-versioned provenance. Nothing is lost in the interim: the raw mirror and every retained source
+versioned provenance. No primary source text is discarded in the interim: the raw mirror and every retained source
 field remain available, so detection can be recomputed from primary data at any time.
 `opinions.is_ocr_extracted` is unaffected — that is CourtListener's own provenance field
 recording how *they* produced the text, not a judgment about its quality.
@@ -130,13 +136,15 @@ recording how *they* produced the text, not a judgment about its quality.
 
 ---
 
-## Optional apparatus — `scotus-apparatus.sqlite` (pending rework)
+## Optional apparatus — `scotus-apparatus.sqlite` (legacy; not a lineage-compatible or complete V2 companion asset)
 
 Carries the reporters' front matter (syllabus, summary, headmatter, arguments of counsel) at the
-cluster level, stored raw. **This asset still builds from the V1-era snapshot
-`dataset/all_clusters.csv` and its duplicate resolution predates the current dedup**, so its
-`canonical_cluster_id` mapping does not align with the V2 `clusters` table. It is scheduled for
-a rework onto the V2 staging; until then, treat joins against the core database as approximate.
+cluster level, stored raw. **The current asset was built at git commit `503e3f1` against the
+1,076-cluster V1 corpus (its own `meta`), from the V1-era snapshot `dataset/all_clusters.csv`,
+with duplicate resolution that predates the current dedup.** Some ids may still join
+technically; correctness and coverage against the V2 `clusters` table are not guaranteed. The
+rework contract — rebuild from V2 staging plus the checksum-pinned raw mirror, with recorded
+lineage and per-duplicate provenance — is in docs/clean-text-design.md §5.
 Tables: `cluster_text` (one row per cluster × apparatus kind), `cluster_meta`
 (`case_name_full`, `attorneys`, `judges`), `meta` (build pin). Committed coverage snapshot:
 `dataset/apparatus_manifest.csv`.

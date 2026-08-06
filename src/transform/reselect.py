@@ -1,19 +1,24 @@
-"""Transform · reselect: choose the best source-text field per opinion.
+"""Transform · reselect: choose the source-text field per opinion.
 
-materialize retained every candidate transcription field per opinion; CourtListener
-documents no precedence and its ``html_with_citations`` pick is not fidelity-safe
-(often the OCR-dirty Harvard text). This stage records, per opinion, which field to
-use downstream -- a pointer, not a copy, so it is non-destructive: every source field
-stays in stg_opinions.
+materialize retained every candidate transcription field per opinion. This stage
+applies a corpus-specific FIXED priority -- the first non-empty field wins; no
+per-opinion fidelity evaluation happens here. The order was established by a prior
+review of this corpus and is a deliberate departure from CourtListener's general
+recommendation of ``html_with_citations``. The result is a pointer, not a copy:
+every source field stays in stg_opinions.
 
-The choice is by priority, cleanest-and-opinion-only first (measured on the corpus):
-- ``html_lawbox``: clean and opinion-only -- ideal when present (435/693, 0% dirty).
-- ``xml_harvard``: opinion-only, but OCR-dirty for Dallas (long-s); preferred over html
-  anyway, because correct scope beats cleanliness -- apparatus contamination is worse
-  and harder to strip than localized, flaggable OCR noise.
-- ``html`` (resource.org): clean words but BUNDLES the reporter apparatus (syllabus +
-  arguments + other opinions) into the body -- wrong scope, so a last resort.
-- ``html_with_citations``: CL's derived pick; a final universal fallback.
+Priority, with the measurements behind it (current corpus: 674 chosen -- lawbox 429 /
+harvard 122 / html 123 / with_citations 0):
+- ``html_lawbox``: opinion-scoped in this corpus's review; first when present.
+- ``xml_harvard``: opinion-scoped apart from structurally tagged front matter that the
+  cleaner renders too (census over chosen sources: <headnotes> in 11 opinions,
+  <judges> in 6, <attorneys> in 1 -- see docs/clean-text-design.md section 5);
+  preferred over html because scope beats surface quality.
+- ``html`` (resource.org): bundles reporter apparatus (syllabus, arguments, other
+  opinions) into the body. Measured: where an opinion has both lawbox and html
+  (n=367), the html is median 2.06x the lawbox length (>=2x in 195 of 367) -- the
+  bundling, not extra opinion text. A last resort.
+- ``html_with_citations``: CL's derived pick; a final fallback (currently unreached).
 
 It works per opinion row, so it is neutral to the combined-vs-split representation: a
 cluster's combined row and its per-justice split rows each get a source, and ``type``

@@ -6,11 +6,16 @@
 
 - deterministic — pure functions, same input -> same output; no LLM/statistical passes;
 - conservative — the ONLY content dropped is star-pagination page markers (captured instead as page
-  breaks): the structural `<span class="star-pagination">` / `<page-number>` forms, plus the
-  *bracketed* inline text form (`[*626`, `*625]`). Bare unbracketed `*54` and all other original
-  content — footnote bodies and their inline ref markers, the case caption, citations — is kept;
-- non-destructive — `raw_html` + `plain_text` are untouched; this is a derived column;
-- no OCR handling of any kind — the text is rendered as the source has it, errors included.
+  breaks): the structural `<span class="star-pagination">` / `<page-number>` forms (open or
+  self-closing), plus the *bracketed* inline text form (`[*626`, `*625]`). Bare unbracketed `*54`
+  and all other original content — footnote bodies and their inline ref markers, the case caption,
+  citations — is kept. Conservative cuts both ways: structurally tagged front matter inside the
+  chosen source (headnotes, judges, attorneys) is rendered too — see
+  docs/clean-text-design.md section 5 for the measured census;
+- non-destructive — the source fields are untouched; this is a derived column;
+- no OCR handling of any kind — the text is rendered as the source has it, errors included;
+- known presentational loss — whitespace collapse flattens `<pre>` column alignment (2 chosen
+  sources in the current corpus; design note section 3).
 
 Normalization: `\r`->`\n`, control chars stripped (except `\n`/`\t`), whitespace collapsed, Unicode
 NFC. No ASCII folding in the canonical column (that lives in the FTS tokenizer instead). The `■`
