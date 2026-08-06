@@ -15,9 +15,10 @@ harvard 122 / html 123 / with_citations 0):
   <judges> in 6, <attorneys> in 1 -- see docs/clean-text-design.md section 5);
   preferred over html because scope beats surface quality.
 - ``html`` (resource.org): bundles reporter apparatus (syllabus, arguments, other
-  opinions) into the body. Measured: where an opinion has both lawbox and html
-  (n=367), the html is median 2.06x the lawbox length (>=2x in 195 of 367) -- the
-  bundling, not extra opinion text. A last resort.
+  opinions) into the body. Measured over the 674 corpus opinions: 367 have both
+  lawbox and html; among those, the html is median 2.06x the lawbox length (>=2x in
+  195 of 367) -- consistent with, but not independently establishing, the prior
+  review's bundling classification. A last resort.
 - ``html_with_citations``: CL's derived pick; a final fallback (currently unreached).
 
 It works per opinion row, so it is neutral to the combined-vs-split representation: a

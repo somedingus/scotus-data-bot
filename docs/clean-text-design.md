@@ -21,11 +21,12 @@ Cleaning must therefore be:
 The reselect stage applies a corpus-specific **fixed priority** — the first non-empty field wins
 (`html_lawbox` → `xml_harvard` → `html` → `html_with_citations`) — established by a prior fidelity
 review of this corpus; it does not evaluate fidelity per opinion. This is a deliberate departure
-from CourtListener's general recommendation of `html_with_citations`, supported by a reproducible
-measurement: where an opinion carries both lawbox and resource.org html (n=367), the html is
-median 2.06× the lawbox length (≥2× in 195/367) — the bundled reporter apparatus, not extra
-opinion text. Current selection (674 chosen sources): lawbox 429 / harvard 122 / html 123 /
-with_citations 0.
+from CourtListener's general recommendation of `html_with_citations`, supported by a
+measurement: within the 674-opinion corpus, 367 opinions carry both lawbox and resource.org
+html, and among those the html is median 2.06× the lawbox length (≥2× in 195/367) — consistent
+with, but not independently establishing, the prior fidelity review's classification of the
+extra length as bundled reporter apparatus rather than opinion text. Current selection (674
+chosen sources): lawbox 429 / harvard 122 / html 123 / with_citations 0.
 
 The clean stage renders the chosen field through `clean.clean_opinion`, producing per opinion:
 `clean_text` and `page_breaks` (reporter pagination as character-offset boundaries). The load
@@ -39,8 +40,8 @@ them alone identifies the build).
   and Harvard XML (`<opinion><author>…`) — with no dependency (stdlib-only runtime rule).
 - **Three page-marker forms are captured** as page breaks:
   (1) `<span class="star-pagination" label>`, (2) `<page-number label>` — both in open and
-  self-closing form (self-closing support added in cleaner v2; zero self-closing markers occur
-  in the current mirror, measured over the 674 chosen sources) — and (3) a bracketed inline
+  self-closing form (self-closing support added in cleaner v2; zero self-closing markers were
+  found in the 674 chosen source values measured) — and (3) a bracketed inline
   text form (`[*626` / `*625]`). **Bare unbracketed `*54` is deliberately KEPT** in the
   text — it is ambiguous (footnote asterisk vs. content) and, in the residue, usually
   OCR-garbled pagination, so parsing it would be lossy guessing.
