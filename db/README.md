@@ -19,9 +19,8 @@ sqlite3 data/processed/scotus.sqlite      # ad-hoc SQL
 |---|---|---|
 | `clusters` | 1,120 | every cluster, with the stage verdicts (`is_scotus` + `scope_evidence`, `dedup_role` + `dup_of` + `dup_method`) and the terminal `corpus_status` |
 | `citations` | 3,596 | structured parallel cites (`reporter, volume, page, type`) |
-| `opinions` | 1,160 | every opinion row (`type`, `author`, `ordering_key`); the 674 corpus opinions also carry `chosen_source`, `is_ocr_dirty`, `clean_text`, `clean_version` |
-| `page_breaks` | 3,985 | reporter page boundaries within `clean_text`: `ordinal, page_label, char_offset, anchor` |
-| `ocr_suspects` | 2,813 | OCR-suspect spots as offset spans into `clean_text`: `ordinal, char_offset, token` — input to the future OCR-correction stage |
+| `opinions` | 1,160 | every opinion row (`type`, `author`, `ordering_key`); the 674 corpus opinions also carry `chosen_source`, `clean_text`, `clean_version` |
+| `page_breaks` | 3,985 | reporter page boundaries within `clean_text`: `ordinal, page_label, char_offset, anchor`. Boundary records, not spans; `char_offset` is a zero-based code-point index; multiple labels may share one offset (35 groups) — see the lookup recipe below |
 | `meta` | — | build provenance (version, timestamp, git commit, staging lineage) + all counts |
 | `scotus_decisions` (view) | **648** | the corpus: `corpus_status = 'included'` |
 | `duplicate_clusters` (view) | 227 | each duplicate joined to its canonical's name and cite |
@@ -45,19 +44,42 @@ Downstream analysis should select from `scotus_decisions` (or filter
 ### Cleaned text and offset spans
 
 `clean_text` is a deterministic render of each corpus opinion's **chosen source field**
-(`chosen_source`; picked by the reselect stage for fidelity) through `src/clean.py`:
+(`chosen_source`; a corpus-specific fixed priority applied by the reselect stage — see its
+docstring for the order and the measurements behind it) through `src/clean.py`:
 star-pagination markers are removed (captured in `page_breaks` instead), whitespace/Unicode is
-normalized (NFC), and content — footnote bodies, captions, citations — is preserved. **No OCR
-is corrected**: suspect spots are located, not fixed, in `ocr_suspects` (`char_offset` indexes
-into `clean_text`). `clean_version` tracks the cleaning logic. Raw source text is not shipped —
-the verbatim raw mirror (a Release asset pinned by committed checksums) is the audit trail,
-and the offset spans plus `chosen_source`/`clean_version` pin the derivation.
+normalized (NFC), and content — footnote bodies, captions, citations — is preserved. The
+rendering is conservative in both directions: structurally tagged front matter inside a chosen
+source reaches `clean_text` too (measured census: `<headnotes>` in 11 opinions, `<judges>` in 6,
+`<attorneys>` in 1 — see docs/clean-text-design.md §5), and whitespace collapse flattens `<pre>`
+column alignment (2 opinions).
+`clean_version` tracks the cleaning logic. Raw source text is not shipped — the verbatim raw
+mirror (a Release asset pinned by committed checksums) is the audit trail, and the page-break
+offset spans plus `chosen_source`/`clean_version` pin the derivation.
+
+**No OCR handling.** The text is rendered as the source has it, errors included; the `■`
+unreadable-character glyph is preserved verbatim because it marks missing text in the source.
+The database asserts nothing about which spans are OCR-corrupt. A previous release shipped an
+`ocr_suspects` table built from a token list, but a bare token flag is a claim about a *word*,
+not about an *occurrence* — 86% of its rows were ordinary correct words such as "defendant".
+Detection now belongs to the OCR application, which owns detection and evaluation together and
+will publish occurrence records only when each carries its own evidence and provenance.
+
+Page lookup: offsets are zero-based code points, SQLite `instr()` is one-based (subtract 1;
+`instr() = 0` means the phrase is absent), and among boundaries at or before the hit the page
+is the greatest `(char_offset, ordinal)`:
 
 ```sql
--- reconstruct which reporter page a search hit falls on
-SELECT o.opinion_id, max(pb.page_label) AS page
-FROM opinions o JOIN page_breaks pb ON pb.opinion_id = o.opinion_id
-WHERE pb.char_offset <= instr(o.clean_text, 'commerce among the') GROUP BY o.opinion_id;
+-- which reporter page a phrase falls on, per opinion
+WITH hit AS (
+  SELECT opinion_id, instr(clean_text, 'commerce among the') - 1 AS pos
+  FROM opinions
+  WHERE clean_text IS NOT NULL AND instr(clean_text, 'commerce among the') > 0
+)
+SELECT hit.opinion_id,
+       (SELECT pb.page_label FROM page_breaks pb
+        WHERE pb.opinion_id = hit.opinion_id AND pb.char_offset <= hit.pos
+        ORDER BY pb.char_offset DESC, pb.ordinal DESC LIMIT 1) AS page
+FROM hit;
 ```
 
 ## Reporter apparatus (optional separate asset, pending rework)
@@ -65,10 +87,11 @@ WHERE pb.char_offset <= instr(o.clean_text, 'commerce among the') GROUP BY o.opi
 The early reporters printed substantial front matter that is not part of any opinion — the
 reporter's syllabus, procedural summary, and arguments of counsel. It lives in a separate,
 optional database (`data/processed/scotus-apparatus.sqlite`, `--stage apparatus`) that
-`ATTACH`es and joins on `cluster_id`. **Caveat:** the apparatus stage still builds from a
-V1-era snapshot (`dataset/all_clusters.csv`) and its duplicate resolution predates the current
-dedup; it is scheduled for a rework onto the V2 staging before the numbers in it can be
-trusted against this database.
+`ATTACH`es and joins on `cluster_id`. **Legacy — not a lineage-compatible or complete V2
+companion asset:** its `meta` records git commit `503e3f1` and a 1,076-cluster corpus (this
+database has 1,120), and its duplicate resolution predates the current dedup. Some ids may
+still join technically; correctness and coverage are not guaranteed. The rework contract
+(rebuild from V2 staging + the checksum-pinned raw mirror) is in docs/clean-text-design.md §5.
 
 ## Example queries
 
@@ -91,9 +114,8 @@ WHERE c.case_name LIKE '%ulloch%' AND o.clean_text IS NOT NULL;
 SELECT cluster_id, case_name, canonical_case_name, canonical_us_cite
 FROM duplicate_clusters LIMIT 10;
 
--- OCR-suspect spots for one opinion, with surrounding context
-SELECT s.char_offset, s.token,
-       substr(o.clean_text, max(1, s.char_offset - 30), 70) AS context
-FROM ocr_suspects s JOIN opinions o USING (opinion_id)
-WHERE o.opinion_id = 84800 ORDER BY s.ordinal;
+-- which source field a decision's text was rendered from
+SELECT c.case_name, o.chosen_source, o.clean_version, length(o.clean_text) AS chars
+FROM opinions o JOIN scotus_decisions c USING (cluster_id)
+WHERE o.clean_text IS NOT NULL ORDER BY chars DESC LIMIT 10;
 ```

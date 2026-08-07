@@ -17,7 +17,7 @@ from src import load
 
 def _make_staging(tmp_path):
     """A minimal but complete staging DB: one corpus decision with two opinions
-    (one with page breaks + OCR flags), its labeled duplicate, one scope-dropped
+    (one with page breaks), its labeled duplicate, one scope-dropped
     cluster, and one vol-19 buffer cluster."""
     path = str(tmp_path / "staging.sqlite")
     conn = sqlite3.connect(path)
@@ -40,9 +40,9 @@ def _make_staging(tmp_path):
           us_volume INTEGER, us_page TEXT, case_name TEXT, scdb_id TEXT,
           dedup_role TEXT, dup_of INTEGER, dup_method TEXT);
         CREATE TABLE stg_opinion_source (opinion_id INTEGER PRIMARY KEY,
-          cluster_id INTEGER, type TEXT, chosen_source TEXT, is_ocr_dirty INTEGER);
+          cluster_id INTEGER, type TEXT, chosen_source TEXT);
         CREATE TABLE stg_opinion_clean (opinion_id INTEGER PRIMARY KEY,
-          cluster_id INTEGER, clean_text TEXT, clean_version INTEGER, ocr_suspect TEXT);
+          cluster_id INTEGER, clean_text TEXT, clean_version INTEGER);
         CREATE TABLE stg_page_break (opinion_id INTEGER, ordinal INTEGER,
           page_label TEXT, char_offset INTEGER, anchor TEXT);
         CREATE TABLE stg_meta (key TEXT PRIMARY KEY, value TEXT);
@@ -165,26 +165,32 @@ def _make_staging(tmp_path):
     # not the dropped cluster; the vol-19 buffer is corpus-excluded by the view, but
     # its text pipeline runs — mirror that: cluster 4's opinion is cleaned too)
     conn.executemany(
-        "INSERT INTO stg_opinion_source VALUES (?,?,?,?,?)",
+        "INSERT INTO stg_opinion_source VALUES (?,?,?,?)",
         [
-            (10, 1, "020lead", "source_html_lawbox", 0),
-            (11, 1, "030concurrence", "source_html_lawbox", 0),
-            (14, 4, "010combined", "source_html_lawbox", 0),
+            (10, 1, "020lead", "source_html_lawbox"),
+            (11, 1, "030concurrence", "source_html_lawbox"),
+            (14, 4, "010combined", "source_html_lawbox"),
         ],
-    )
-    suspect = json.dumps(
-        {"count": 2, "hits": [{"offset": 0, "token": "tbe"}, {"offset": 9, "token": "■"}]}
     )
     conn.executemany(
-        "INSERT INTO stg_opinion_clean VALUES (?,?,?,?,?)",
+        "INSERT INTO stg_opinion_clean VALUES (?,?,?,?)",
         [
-            (10, 1, "tbe lead ■ text of the opinion", 2, suspect),
-            (11, 1, "concurrence text", 2, None),
-            (14, 4, "buffer text", 2, None),
+            (10, 1, "tbe lead ■ text of the opinion", 2),
+            (11, 1, "concurrence text", 2),
+            # opinion 14 exercises the page-lookup contract: a non-BMP char (𝕆) before the
+            # boundaries proves code-point offsets, and pages '10'/'11' share offset 21
+            # (no rendered text between their markers)
+            (14, 4, "buffer 𝕆 alpha bravo charlie delta echo", 2),
         ],
     )
-    conn.execute(
-        "INSERT INTO stg_page_break VALUES (10, 1, '138', 4, 'lead')",
+    conn.executemany(
+        "INSERT INTO stg_page_break VALUES (?,?,?,?,?)",
+        [
+            (10, 1, "138", 4, "lead"),
+            (14, 1, "9", 9, "alpha bravo"),
+            (14, 2, "10", 21, "charlie delta"),
+            (14, 3, "11", 21, "charlie delta"),
+        ],
     )
     conn.executemany(
         "INSERT INTO stg_meta VALUES (?,?)",
@@ -353,15 +359,50 @@ def test_text_only_on_clean_opinions(built):
 
 
 def test_structure_ships_as_offset_spans(built):
-    conn, counts = built
+    conn, _ = built
     assert conn.execute(
         "SELECT ordinal, page_label, char_offset, anchor FROM page_breaks WHERE opinion_id = 10"
     ).fetchall() == [(1, "138", 4, "lead")]
+
+
+_PAGE_LOOKUP_SQL = """
+    WITH hit AS (
+        SELECT opinion_id, instr(clean_text, :needle) - 1 AS pos
+        FROM opinions
+        WHERE opinion_id = :opinion_id AND instr(clean_text, :needle) > 0
+    )
+    SELECT pb.page_label
+    FROM page_breaks pb JOIN hit USING (opinion_id)
+    WHERE pb.char_offset <= hit.pos
+    ORDER BY pb.char_offset DESC, pb.ordinal DESC
+    LIMIT 1
+"""
+
+
+def _lookup_page(conn, opinion_id, needle):
+    row = conn.execute(_PAGE_LOOKUP_SQL, {"opinion_id": opinion_id, "needle": needle}).fetchone()
+    return row[0] if row else None
+
+
+def test_page_lookup_contract(built):
+    """The documented page-lookup recipe: zero-based code-point offsets, boundaries not
+    spans, shared offsets resolved by ordinal, instr()'s one-based result corrected."""
+    conn, _ = built
+    # non-BMP proof: SQLite instr() minus 1 equals the Python code-point index even
+    # after an astral char (𝕆), so the stored offsets and SQL lookups share coordinates
+    text = conn.execute("SELECT clean_text FROM opinions WHERE opinion_id = 14").fetchone()[0]
     assert conn.execute(
-        "SELECT ordinal, char_offset, token FROM ocr_suspects WHERE opinion_id = 10 "
-        "ORDER BY ordinal"
-    ).fetchall() == [(1, 0, "tbe"), (2, 9, "■")]
-    assert counts["n_ocr_suspects"] == 2
+        "SELECT instr(clean_text, 'bravo') - 1 FROM opinions WHERE opinion_id = 14"
+    ).fetchone()[0] == text.index("bravo")
+    # a hit inside a page's run resolves to that page
+    assert _lookup_page(conn, 14, "bravo") == "9"
+    # a hit exactly AT a shared boundary offset takes the greatest (char_offset, ordinal)
+    assert text.index("charlie") == 21
+    assert _lookup_page(conn, 14, "charlie") == "11"
+    # a missing phrase yields no row (instr() = 0 is excluded, not mapped to offset -1)
+    assert _lookup_page(conn, 14, "no such phrase") is None
+    # text before the first captured marker precedes any known page
+    assert _lookup_page(conn, 14, "buffer") is None
 
 
 def test_citations_parsed_and_exact_dupes_collapsed(built):
@@ -535,14 +576,6 @@ def test_referential_integrity(db):
         )
         == 0
     )
-    assert (
-        _one(
-            db,
-            "SELECT count(*) FROM ocr_suspects s LEFT JOIN opinions o USING (opinion_id) "
-            "WHERE o.opinion_id IS NULL",
-        )
-        == 0
-    )
 
 
 def test_every_decision_has_text(db):
@@ -566,14 +599,6 @@ def test_offset_spans_index_into_clean_text(db):
         )
         == 0
     )
-    assert (
-        _one(
-            db,
-            "SELECT count(*) FROM ocr_suspects s JOIN opinions o USING (opinion_id) "
-            "WHERE s.char_offset < 0 OR s.char_offset >= length(o.clean_text)",
-        )
-        == 0
-    )
 
 
 def test_clean_version_is_uniform(db):
@@ -584,6 +609,27 @@ def test_clean_version_is_uniform(db):
         )
         == 1
     )
+
+
+def test_no_ocr_metadata_ships(db):
+    """The artifact asserts nothing about OCR damage.
+
+    A bare token flag is a claim about a *word*, not about an occurrence: the detector
+    that produced the previous ocr_suspects table had no per-occurrence evidence, and
+    86% of its rows were ordinary correct words. OCR detection now belongs to the OCR
+    application, which emits occurrence records carrying evidence and provenance; until
+    then the artifact carries no OCR columns or tables. This guard keeps the residue
+    from silently returning."""
+    tables = {
+        row[0]
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+    }
+    assert "ocr_suspects" not in tables
+    columns = {row[1] for row in db.execute("PRAGMA table_info(opinions)")}
+    assert "is_ocr_dirty" not in columns
+    # is_ocr_extracted is CourtListener's own provenance field and legitimately stays
+    assert "is_ocr_extracted" in columns
+    assert "n_ocr_suspects" not in dict(db.execute("SELECT key, value FROM meta"))
 
 
 def test_no_empty_string_sentinels(db):

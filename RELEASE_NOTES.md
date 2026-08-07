@@ -13,7 +13,6 @@ case-for-case against an authoritative per-volume reference.
 | All clusters, each with a terminal `corpus_status` | 1,120 (648 included + 41 outside_volume + 227 duplicate + 204 not_scotus) |
 | Structured citations | 3,596 |
 | Page-break offset spans | 3,985 |
-| OCR-suspect offset spans (located, not corrected) | 2,813 |
 | Full text | ~8.1M characters of deterministic `clean_text` |
 
 **Decisions vs. opinions:** 648 is case-level (one row per decision in `scotus_decisions`);
@@ -40,7 +39,7 @@ sqlite3 scotus.sqlite "SELECT count(*) FROM scotus_decisions;"   # -> 648
 datasette scotus.sqlite
 ```
 
-Tables: `clusters`, `citations`, `opinions`, `page_breaks`, `ocr_suspects`, `meta`, and the
+Tables: `clusters`, `citations`, `opinions`, `page_breaks`, `meta`, and the
 views `scotus_decisions` and `duplicate_clusters`. See `db/README.md` and `dictionary.md` for
 the schema and example queries.
 

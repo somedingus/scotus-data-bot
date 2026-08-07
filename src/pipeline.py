@@ -178,17 +178,16 @@ def stage_validate():
 def stage_reselect():
     """Transform stage 5: choose the best source-text field per corpus opinion.
 
-    Writes stg_opinion_source (chosen_source + is_ocr_dirty + type) by priority
+    Writes stg_opinion_source (chosen_source + type) by priority
     html_lawbox -> xml_harvard -> html. Non-destructive: records the choice only, leaves
     all source fields in stg_opinions; per opinion row, so combined + split both kept."""
     selections = reselect.run_reselect()
     by_src = Counter(s.chosen_source for s in selections)
-    dirty = sum(1 for s in selections if s.is_ocr_dirty)
     print(
         f"reselect: {len(selections)} opinions -> "
         f"lawbox {by_src.get('source_html_lawbox', 0)} / "
         f"harvard {by_src.get('source_xml_harvard', 0)} / "
-        f"html {by_src.get('source_html', 0)}; {dirty} ocr-dirty -> stg_opinion_source",
+        f"html {by_src.get('source_html', 0)} -> stg_opinion_source",
         file=sys.stderr,
     )
     return selections
@@ -198,15 +197,13 @@ def stage_clean():
     """Transform stage 6: clean_text per corpus opinion from its chosen source.
 
     Runs each opinion's reselect-chosen source through the shared deterministic cleaner
-    (src/clean.py) and writes stg_opinion_clean (clean_text + version + ocr_suspect) and
+    (src/clean.py) and writes stg_opinion_clean (clean_text + version) and
     stg_page_break. Non-destructive; reuses the tested cleaner (star-pagination -> page
-    breaks, both dialects, NFC, no OCR correction, keeps captions/headers)."""
+    breaks, both dialects, NFC, no OCR handling, keeps captions/headers)."""
     cleaned = clean_opinions.run_clean()
     n_breaks = sum(len(c.page_breaks) for c in cleaned)
-    n_suspect = sum(1 for c in cleaned if c.ocr_suspect)
     print(
-        f"clean: {len(cleaned)} opinions -> stg_opinion_clean "
-        f"({n_breaks} page-breaks, {n_suspect} with ocr_suspect)",
+        f"clean: {len(cleaned)} opinions -> stg_opinion_clean ({n_breaks} page-breaks)",
         file=sys.stderr,
     )
     return cleaned

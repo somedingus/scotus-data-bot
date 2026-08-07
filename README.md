@@ -46,8 +46,7 @@ is ever deleted — records are labeled, and every exclusion carries its reason.
   reporter authority + SCDB, with a committed human-review ledger) → `dedup` (collapse duplicate
   records; scdb-anchored composite rule + a second ledger for adjudicated pairs) → `validate`
   (reconcile per volume against `dataset/case_name_reference.csv`) → `reselect` (pick the most
-  faithful source text per opinion) → `clean` (derive `clean_text`, page-break offsets, and
-  OCR-suspect spans).
+  faithful source text per opinion) → `clean` (derive `clean_text` and page-break offsets).
 - **Load** builds the shipped database: every cluster with a terminal `corpus_status`
   (included / outside_volume / duplicate / not_scotus — the four counts sum exactly to 1,120),
   text and offset spans for the corpus opinions, FTS5, and full build lineage in `meta`.
@@ -83,7 +82,7 @@ src/transform/           the staged Transform package:
   dedup.py                 duplicate records -> canonical (composite rule + review ledger)
   validate.py              per-volume reconciliation vs the committed reference
   reselect.py              choose the source-text field per opinion
-  clean_opinions.py        derive clean_text + page breaks + OCR-suspect spans
+  clean_opinions.py        derive clean_text + page-break offset spans
 src/clean.py             the shared deterministic text cleaner
 src/load.py              build the shipped scotus.sqlite from staging (separate ETL phase)
 src/apparatus.py         optional reporter-apparatus asset (pending rework to V2 staging)
@@ -131,8 +130,8 @@ make dist            # gzip the DB + SHA256SUMS (release artifact)
 
 A single SQLite file (`data/processed/scotus.sqlite`) with FTS5 full-text search. Tables:
 `clusters` (all 1,120, each with a terminal `corpus_status`), `citations`, `opinions` (all
-1,160 rows; derived text on the 674 corpus opinions), `page_breaks` and `ocr_suspects`
-(source structure as character-offset spans into `clean_text`), `meta`, and the views
+1,160 rows; derived text on the 674 corpus opinions), `page_breaks` (source structure as
+character-offset spans into `clean_text`), `meta`, and the views
 `scotus_decisions` (the 648-decision corpus — the handoff contract for downstream analysis)
 and `duplicate_clusters`. See [db/README.md](db/README.md) for the schema and example queries.
 
@@ -158,7 +157,8 @@ compressed / ~13 MB unpacked) rather than committed.
 - [x] Staged Transform: materialize, scope, dedup, validate, reselect, clean
 - [x] Human-review ledgers (scope + dedup) and exact per-volume reference reconciliation
 - [x] Load: the shipped database with terminal dispositions and offset-span structure
-- [ ] OCR-correction stage (propose -> review -> execute; proposals utility in progress)
+- [ ] OCR application (owns detection *and* evaluation; publishes only evidence-backed
+      occurrence records — see docs/clean-text-design.md)
 - [ ] Apparatus asset rework onto the V2 staging
 
 ## Contributing
