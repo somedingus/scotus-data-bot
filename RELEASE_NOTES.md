@@ -1,29 +1,33 @@
-# SCOTUS corpus 1790–1820
+# SCOTUS corpus, U.S. Reports vols 2–18 (1791–1820)
 
-A clean, de-duplicated, full-text database of **U.S. Supreme Court decisions, 1790–1820**,
-built from the [CourtListener](https://www.courtlistener.com/) API by this project's pipeline.
+A clean, de-duplicated, full-text database of **U.S. Supreme Court decisions** built from the
+[CourtListener](https://www.courtlistener.com/) API by this project's pipeline, and reconciled
+case-for-case against an authoritative per-volume reference.
 
 ## Contents
 
 | | |
 |---|---|
-| Distinct SCOTUS decisions | **663** (`scotus_decisions` view) |
-| Opinions (with full text) | 690 (13 seriatim cases have several) |
-| Structured citations | 3,426 |
-| All clusters (incl. REVIEW + duplicates, with provenance) | 1,076 |
-| Full text | ~9.5M characters (`html_with_citations` + tag-stripped `plain_text`) |
+| Distinct SCOTUS decisions | **648** (`scotus_decisions` view) |
+| Opinion texts | 674 (seriatim cases have several per decision) |
+| All clusters, each with a terminal `corpus_status` | 1,120 (648 included + 41 outside_volume + 227 duplicate + 204 not_scotus) |
+| Structured citations | 3,596 |
+| Page-break offset spans | 3,985 |
+| OCR-suspect offset spans (located, not corrected) | 2,813 |
+| Full text | ~8.1M characters of deterministic `clean_text` |
 
-**Decisions vs. opinions:** the **663** count is case-level (one row per decision in
-`scotus_decisions`); the **690** opinions are document-level. The 27 extra come from 13 seriatim
-cases (each Justice writing separately) whose opinions all link to one decision via `cluster_id`.
+**Decisions vs. opinions:** 648 is case-level (one row per decision in `scotus_decisions`);
+674 is document-level — seriatim cases (each Justice writing separately) link several opinions
+to one decision via `cluster_id`.
 
-Validated against [Wikipedia's annual SCOTUS decision totals](https://en.wikipedia.org/wiki/Number_of_U.S._Supreme_Court_cases_decided_by_year)
-(663 vs 647; most years exact or ±1). All landmark cases present (Marbury, McCulloch,
-Martin v. Hunter, Dartmouth, Gibbons, Fletcher).
+**Validation:** the corpus reconciles exactly against the committed per-volume reference
+(`dataset/case_name_reference.csv`): 648 kept = 648 referenced = 648 matched, every volume
+0 missing / 0 extra. Human adjudications are committed, auditable ledgers
+(`dataset/scope_review.csv`, `dataset/dedup_review.csv`) with per-row rationales.
 
 ## Asset
 
-- `scotus.sqlite.gz` — gzipped SQLite database (~7 MB compressed, ~21 MB unpacked) with FTS5
+- `scotus.sqlite.gz` — gzipped SQLite database (~5.6 MB compressed, ~13 MB unpacked) with FTS5
   full-text search over opinion text.
 - `SHA256SUMS` — checksum for verification.
 
@@ -31,16 +35,18 @@ Martin v. Hunter, Dartmouth, Gibbons, Fletcher).
 
 ```bash
 gunzip scotus.sqlite.gz
-sqlite3 scotus.sqlite "SELECT count(*) FROM scotus_decisions;"   # -> 663
+sqlite3 scotus.sqlite "SELECT count(*) FROM scotus_decisions;"   # -> 648
 # or explore in the browser:
 datasette scotus.sqlite
 ```
 
-Tables: `clusters`, `citations`, `opinions`, `review_dispositions`, `meta`, and the
-`scotus_decisions` view. See `db/README.md` for the schema and example queries.
+Tables: `clusters`, `citations`, `opinions`, `page_breaks`, `ocr_suspects`, `meta`, and the
+views `scotus_decisions` and `duplicate_clusters`. See `db/README.md` and `dictionary.md` for
+the schema and example queries.
 
 ## Provenance & license
 
-Regenerable from source with `make ingest` (see the repo README). The `meta` table records
-the exact build (pipeline version, timestamp, git commit). Project code is MIT-licensed; the
-court opinions themselves are public-domain U.S. government works.
+Regenerable from source: the verbatim raw mirror is a Release asset pinned by committed
+checksums, and the `meta` table records the exact build (pipeline version, timestamp, git
+commit, staging lineage). Project code is MIT-licensed; the court opinions themselves are
+public-domain U.S. government works.

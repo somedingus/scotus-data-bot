@@ -2,11 +2,13 @@
 
 [![CI](https://github.com/jcbrown-code/scotus-data-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/jcbrown-code/scotus-data-bot/actions/workflows/ci.yml)
 
-Version 1.0: A python ETL pipeline that builds a clean, de-duplicated, full-text corpus of **U.S. Supreme
-Court decisions, 1790–1820** from the [CourtListener](https://www.courtlistener.com/)
-API and loads it into a lightweight, queryable **SQLite database**.
+A Python ETL pipeline that builds a clean, de-duplicated, full-text corpus of **U.S. Supreme
+Court decisions in U.S. Reports volumes 2–18 (1791–1820)** from the
+[CourtListener](https://www.courtlistener.com/) API and ships it as a queryable **SQLite
+database**.
 
-**663 distinct decisions · 690 opinions · ~9.5M characters of text.**
+**648 decisions · 674 opinion texts · ~8.1M characters — reconciled case-for-case against an
+authoritative per-volume reference (zero missing, zero extra).**
 
 ## Download the prebuilt database
 
@@ -17,141 +19,153 @@ Don't want to run the pipeline? Grab the built SQLite database from the latest
 # download scotus.sqlite.gz + SHA256SUMS from the Release, then:
 shasum -a 256 -c SHA256SUMS      # verify integrity
 gunzip scotus.sqlite.gz
-sqlite3 scotus.sqlite "SELECT count(*) FROM scotus_decisions;"   # -> 663
+sqlite3 scotus.sqlite "SELECT count(*) FROM scotus_decisions;"   # -> 648
 datasette scotus.sqlite          # or browse it in the browser
 ```
 
-(Maintainers publish it with `make release VERSION=v1.0.0`.)
-
 ## The problem
 
-Problem: A naïve `docket__court=scotus` pull for 1790–1820 returns **1,076 clusters** — but only
-~660 are distinct Supreme Court decisions, primarily because of two issues:
+A naive `docket__court=scotus` pull for this era returns **1,120 clusters** — but only 648 are
+distinct Supreme Court decisions, for two main reasons:
 
-1. **Non-SCOTUS cases.** Early *U.S. Reports* (Dallas reporters, vols 2–4) reprinted
-   Pennsylvania state-court and federal circuit cases that CourtListener tags `scotus`.
-2. **Duplicate clusters.** CourtListener's 2025 Harvard CAP import (`source="U"`) was only
-   partially merged, leaving ~200 early cases with an unmerged duplicate cluster.
+1. **Non-SCOTUS cases.** Early *U.S. Reports* (Dallas, vols 2–4) reprinted Pennsylvania
+   state-court and federal circuit cases that CourtListener tags `scotus`.
+2. **Duplicate records.** CourtListener's Harvard CAP import created parallel cluster records
+   for hundreds of cases it never merged, and some records carry page numbers from a different
+   print edition, or even another case's SCDB id.
 
 ## Method
 
-- **Source:** the database-backed `clusters` endpoint (not `search`, which the docs call the
-  relevance-ranked, non-canonical view), fetched one year at a time with structured `citations`.
-- **SCOTUS filter:** **KEEP** if U.S. reporter volume ≥ 5 (Cranch/Wheaton = exclusively SCOTUS)
-  **or** the cluster has an `scdb_id`; else **REVIEW** (all non-SCOTUS — see
-  [dataset/REVIEW_NOTES.md](dataset/REVIEW_NOTES.md); 0 genuine decisions wrongly excluded).
-- **De-duplication:** collapse same-case clusters (transitively) by identical *(normalized name,
-  year)* **or** identical U.S. citation + ≥0.5 name-token overlap; keep the best record (prefer
-  `scdb_id`, then merged / non-`U` source, then citation count). Companion cases sharing a
-  starting page have ~zero name overlap and stay distinct.
-- **Full text:** fetched per cluster from the `opinions` endpoint (the only filter it supports),
-  preferring `html_with_citations`; both raw HTML and tag-stripped plain text are stored.
+Extract, transform, and load are strictly separated; every stage is deterministic, and nothing
+is ever deleted — records are labeled, and every exclusion carries its reason.
 
-**Validation:** the 663 per-year counts track [Wikipedia's annual SCOTUS totals](https://en.wikipedia.org/wiki/Number_of_U.S._Supreme_Court_cases_decided_by_year)
-— 647 (+16), most years exact or ±1 (residual = the 1791 term-vs-calendar shift and
-companion-case granularity). 
-All landmarks present (Marbury, McCulloch, Martin v. Hunter,
-Dartmouth, Gibbons, Fletcher).
+- **Extract** mirrors every cluster and opinion **verbatim** (all records, full API fields) into
+  a raw mirror, distributed as a GitHub Release asset and pinned by committed checksums.
+- **Transform** runs staged over a SQLite staging database:
+  `materialize` (normalize the cluster → opinion hierarchy) → `scope` (is it a SCOTUS decision?
+  reporter authority + SCDB, with a committed human-review ledger) → `dedup` (collapse duplicate
+  records; scdb-anchored composite rule + a second ledger for adjudicated pairs) → `validate`
+  (reconcile per volume against `dataset/case_name_reference.csv`) → `reselect` (pick the most
+  faithful source text per opinion) → `clean` (derive `clean_text`, page-break offsets, and
+  OCR-suspect spans).
+- **Load** builds the shipped database: every cluster with a terminal `corpus_status`
+  (included / outside_volume / duplicate / not_scotus — the four counts sum exactly to 1,120),
+  text and offset spans for the corpus opinions, FTS5, and full build lineage in `meta`.
+
+**Validation:** the corpus reconciles **exactly** against the per-volume reference —
+648 kept = 648 referenced = 648 matched, every volume 0 missing / 0 extra — and the test suite
+pins that as a standing invariant. All landmarks present (Marbury, M'Culloch, Martin v. Hunter,
+Dartmouth College, Fletcher).
 
 ## Repository layout
 
 ```mermaid
 flowchart TB
     API["CourtListener API<br/>clusters + opinions"]
-    API -->|"src/extract.py"| RAW["data/raw/<br/>raw_clusters.json · fulltext/"]
-    RAW -->|"src/transform.py<br/>filter + de-dup"| DS["dataset/ · committed audit<br/>all_clusters.csv (1,076) → keep.csv (663)"]
-    DS -->|"src/load.py"| DB["data/processed/scotus.sqlite<br/>scotus_decisions view = 663 · FTS5"]
+    API -->|"src/extract.py (verbatim)"| RAW["data/raw/ · raw mirror<br/>Release asset, checksum-pinned"]
+    RAW -->|"src/transform/materialize.py"| STG["data/processed/scotus-staging.sqlite<br/>cluster -> opinion hierarchy"]
+    STG -->|"scope · dedup · validate<br/>reselect · clean"| STG
+    LED["dataset/ · committed<br/>review ledgers + reference + report"] -.-> STG
+    STG -->|"src/load.py"| DB["data/processed/scotus.sqlite<br/>scotus_decisions view = 648 · FTS5"]
     DB -->|"make dist / make release"| REL["GitHub Release<br/>scotus.sqlite.gz"]
-    CFG["config/settings.py<br/>paths · token · date range"] -.-> RAW
-    PIPE["src/pipeline.py<br/>orchestrator (--stage)"] -.-> DB
-    QA["tests/ · db/inspect.sql · CI<br/>validate lineage + counts"] -.-> DB
+    PIPE["src/pipeline.py<br/>orchestrator (--stage, one per run)"] -.-> DB
+    QA["tests/ · db/inspect.sql · CI"] -.-> DB
 ```
 
 ```
-pyproject.toml         package metadata + deps (extras: [dev], [postgres]) + entry points
-config/settings.py     paths + env (token, date range, DB path)
-src/extract.py         CourtListener API: clusters + opinions (auth, pagination, pacing)
-src/transform.py       filter + dedup + citation parse + HTML strip   (stdlib; unit-tested)
-src/load.py            schema + loader + FTS    (SQLite default; --target postgres portable)
-src/pipeline.py        orchestrator: clusters → text → load
-dataset/               COMMITTED snapshot: keep.csv, fulltext_manifest.csv, review_* (reviewable)
-data/                  GITIGNORED: raw API dumps + processed staging + the .sqlite
-db/inspect.sql         human-readable completeness report (`make inspect`)
-tests/                 unit tests (transforms) + data-quality tests (loaded DB)
+pyproject.toml           package metadata + [dev] extras + the scotus-pipeline entry point
+config/settings.py       paths + env (token, date window, corpus span, DB paths)
+src/extract.py           CourtListener API: verbatim mirror fetch (auth, pagination, pacing)
+src/mirror.py            raw-mirror packaging + checksum-verified fetch (Release asset)
+src/transform/           the staged Transform package:
+  materialize.py           raw mirror -> staging DB (no decisions; missing = NULL)
+  scope.py                 is_scotus per cluster (reporter authority + SCDB + review ledger)
+  dedup.py                 duplicate records -> canonical (composite rule + review ledger)
+  validate.py              per-volume reconciliation vs the committed reference
+  reselect.py              choose the source-text field per opinion
+  clean_opinions.py        derive clean_text + page breaks + OCR-suspect spans
+src/clean.py             the shared deterministic text cleaner
+src/load.py              build the shipped scotus.sqlite from staging (separate ETL phase)
+src/apparatus.py         optional reporter-apparatus asset (pending rework to V2 staging)
+dataset/                 COMMITTED: review ledgers, per-volume reference, validate report
+data/                    GITIGNORED: raw mirror, staging DB, the built .sqlite
+db/inspect.sql           human-readable completeness report (`make inspect`)
+tests/                   unit tests per stage + data-quality suites over staging and the DB
 ```
 
 ## Install
 
-Runtime is stdlib-only; the package is installed editable to get the dev tools + console
-entry points. `make setup` creates a `.venv` and installs everything:
+Runtime is stdlib-only; the package is installed editable to get the dev tools. `make setup`
+creates a `.venv` and installs everything:
 
 ```bash
 make setup                       # python -m venv .venv && pip install -e ".[dev]"
 # or manually, in your own environment:
-pip install -e ".[dev]"          # pytest + datasette;  add [postgres] for the Postgres target
+pip install -e ".[dev]"          # pytest + ruff + datasette
 ```
-
-Installing exposes the `scotus-pipeline` and `scotus-load` console commands, and lets
-`from config import …` / `from src import …` resolve without any `sys.path` juggling. The
-`make` targets auto-use `.venv/bin/python` when present — no `activate` needed.
 
 ## Usage
 
-The CourtListener endpoints require a token, managed with
-[agentsecrets](https://github.com/The-17/agentsecrets) (zero-knowledge — the value is injected
-into the child process, never printed). Network stages run under `agentsecrets env --`.
+Stages run **one per invocation** via `python -m src.pipeline --stage <name>` (or the
+`scotus-pipeline` entry point). Only `extract` and `package-mirror` need the CourtListener
+token, injected by [agentsecrets](https://github.com/The-17/agentsecrets)
+(`agentsecrets env -- ...`); everything downstream is offline.
 
 ```bash
-make ingest          # full pipeline: fetch clusters + text, filter, dedup, load   [needs token]
-make clusters        # reprocess cached clusters offline (--from-cache --validate)
-make db              # build data/processed/scotus.sqlite from staging files
+python -m src.pipeline --stage fetch-mirror   # download + verify the raw mirror (no token)
+python -m src.pipeline --stage materialize    # raw mirror -> staging DB
+python -m src.pipeline --stage scope          # is_scotus per cluster
+python -m src.pipeline --stage dedup          # duplicate records -> canonical
+python -m src.pipeline --stage validate       # reconcile vs the reference (prints the report)
+python -m src.pipeline --stage reselect       # choose source text per opinion
+python -m src.pipeline --stage clean          # derive clean_text + offset spans
+python -m src.pipeline --stage load           # build data/processed/scotus.sqlite
+
 make test            # unit + data-quality tests
 make inspect         # human-readable completeness report
 make serve           # browse/query/visualize in Datasette
 make dist            # gzip the DB + SHA256SUMS (release artifact)
 ```
 
-Equivalently via the console entry point (or `python -m src.pipeline`):
-`agentsecrets env -- scotus-pipeline --stage all --validate`.
-
 ## The database
 
-Single SQLite file (`data/processed/scotus.sqlite`) with FTS5 full-text search; the same schema
-loads into Postgres via `python -m src.load --target postgres --dsn …`. Tables: `clusters`,
-`citations`, `opinions`, `review_dispositions`, `meta`, and the `scotus_decisions` view (the
-canonical 663). See [db/README.md](db/README.md) for the schema and example queries.
-
-An optional, separate asset (`scotus-apparatus.sqlite`, `python -m src.pipeline --stage apparatus`)
-carries the reporter apparatus — syllabus, summary, headmatter, and arguments of counsel — that the
-opinion bodies omit; it `ATTACH`es and joins on `cluster_id`, leaving the core corpus frozen.
+A single SQLite file (`data/processed/scotus.sqlite`) with FTS5 full-text search. Tables:
+`clusters` (all 1,120, each with a terminal `corpus_status`), `citations`, `opinions` (all
+1,160 rows; derived text on the 674 corpus opinions), `page_breaks` and `ocr_suspects`
+(source structure as character-offset spans into `clean_text`), `meta`, and the views
+`scotus_decisions` (the 648-decision corpus — the handoff contract for downstream analysis)
+and `duplicate_clusters`. See [db/README.md](db/README.md) for the schema and example queries.
 
 **Inspect / confirm completeness** — by eye or by SQL:
 ```bash
-make inspect                              # provenance, totals, 0-textless check, per-year vs Wikipedia
+make inspect                              # provenance, the corpus_status partition, 0-textless
 datasette data/processed/scotus.sqlite    # web UI: browse, full-text search, facet, export
-sqlite3 data/processed/scotus.sqlite "SELECT count(*) FROM scotus_decisions"   # -> 663
+sqlite3 data/processed/scotus.sqlite "SELECT count(*) FROM scotus_decisions"   # -> 648
 ```
-The `tests/test_data_quality.py` suite asserts the same completeness facts automatically.
+The `tests/test_load.py` data-quality suite asserts the same facts automatically, including the
+conservation contract (648 + 41 + 227 + 204 = 1,120).
 
 ## Distribution
 
-The corpus is regenerable from `src/` + the committed `dataset/` snapshot, so the bulk data
-(`data/`, the `.sqlite`) is gitignored. The built database is published as a **GitHub Release
-asset** (`scotus.sqlite.gz`, ~7 MB) rather than committed.
+The corpus is regenerable from `src/` + the raw mirror (a Release asset pinned by committed
+checksums) + the committed `dataset/` ledgers, so the bulk data (`data/`) is gitignored. The
+built database is published as a **GitHub Release asset** (`scotus.sqlite.gz`, ~5.6 MB
+compressed / ~13 MB unpacked) rather than committed.
 
 ## Status
 
-- [x] Clusters endpoint ingest, SCOTUS filter, de-duplication, Wikipedia validation
-- [x] Human review of the REVIEW bucket (all non-SCOTUS)
-- [x] Full-text retrieval for all 663 decisions
-- [x] ETL restructure + SQLite database with FTS, tests, and inspection
-- [x] Packaging (pyproject), ruff lint/format, 80% coverage, CI
+- [x] Verbatim raw mirror (Release-distributed, checksum-pinned)
+- [x] Staged Transform: materialize, scope, dedup, validate, reselect, clean
+- [x] Human-review ledgers (scope + dedup) and exact per-volume reference reconciliation
+- [x] Load: the shipped database with terminal dispositions and offset-span structure
+- [ ] OCR-correction stage (propose -> review -> execute; proposals utility in progress)
+- [ ] Apparatus asset rework onto the V2 staging
 
 ## Contributing
 
 New here? See **[CONTRIBUTING.md](CONTRIBUTING.md)** for developer onboarding — setup, the
-architecture/data-flow map, the dev workflow (ruff, tests, CI, commit conventions), and how to
-extend the corpus.
+architecture/data-flow map, the dev workflow (ruff, tests, CI), and the data-lineage
+guarantees every change must keep.
 
 ## License
 

@@ -1,13 +1,13 @@
 # Database
 
-A single SQLite file (`data/processed/scotus.sqlite`) built by `src/load.py` from the
-staging files. FTS5 full-text search over opinion text. The same schema loads into
-Postgres via `--target postgres --dsn …` (tsvector + GIN instead of FTS5).
+A single SQLite file (`data/processed/scotus.sqlite`) built by the load stage
+(`python -m src.pipeline --stage load`, `src/load.py`) from the Transform staging database.
+FTS5 full-text search over the corpus opinion text. SQLite-only.
 
 ## Build & inspect
 
 ```bash
-python -m src.load --target sqlite --db data/processed/scotus.sqlite   # or: make db
+python -m src.pipeline --stage load       # rebuild from data/processed/scotus-staging.sqlite
 make inspect                              # human-readable completeness report
 datasette data/processed/scotus.sqlite    # browse/query/visualize in the browser
 sqlite3 data/processed/scotus.sqlite      # ad-hoc SQL
@@ -17,26 +17,41 @@ sqlite3 data/processed/scotus.sqlite      # ad-hoc SQL
 
 | Table / view | Rows | Notes |
 |---|---|---|
-| `clusters` | 1,076 | every cluster, with `bucket` (KEEP/REVIEW), `dedup_role`, `dup_of` |
-| `citations` | many per cluster | structured parallel cites (`reporter, volume, page, type`) |
-| `opinions` | 690 | per opinion: `raw_html` + `plain_text` + `clean_text` (+ `clean_version`, `ocr_suspect`), `type`, `author`, `char_count` |
-| `page_breaks` | 3,633 | reporter page boundaries within `clean_text`: `ordinal, page_label, char_offset, anchor` |
-| `review_dispositions` | 206 | human adjudication of every REVIEW **candidate** (205 canonical + 1 later dedup'd as a duplicate) |
-| `meta` | — | build provenance (version, timestamp, date range, counts, git commit) |
-| `scotus_decisions` (view) | **663** | canonical decisions: `bucket='KEEP' AND dedup_role='canonical'` |
-| `opinions_fts` | — | FTS5 index over `opinions.clean_text` (diacritic-folded tokenizer for recall) |
+| `clusters` | 1,120 | every cluster, with the stage verdicts (`is_scotus` + `scope_evidence`, `dedup_role` + `dup_of` + `dup_method`) and the terminal `corpus_status` |
+| `citations` | 3,596 | structured parallel cites (`reporter, volume, page, type`) |
+| `opinions` | 1,160 | every opinion row (`type`, `author`, `ordering_key`); the 674 corpus opinions also carry `chosen_source`, `is_ocr_dirty`, `clean_text`, `clean_version` |
+| `page_breaks` | 3,985 | reporter page boundaries within `clean_text`: `ordinal, page_label, char_offset, anchor` |
+| `ocr_suspects` | 2,813 | OCR-suspect spots as offset spans into `clean_text`: `ordinal, char_offset, token` — input to the future OCR-correction stage |
+| `meta` | — | build provenance (version, timestamp, git commit, staging lineage) + all counts |
+| `scotus_decisions` (view) | **648** | the corpus: `corpus_status = 'included'` |
+| `duplicate_clusters` (view) | 227 | each duplicate joined to its canonical's name and cite |
+| `opinions_fts` | — | FTS5 over `opinions.clean_text` (diacritic-folded tokenizer for recall) |
 
-`clusters.dup_of` and `opinions.cluster_id`/`citations.cluster_id` reference `clusters.cluster_id`;
-`page_breaks.opinion_id` references `opinions.opinion_id`.
+### `corpus_status` — the terminal disposition
 
-### Cleaned text
+Every cluster carries exactly one of four values, derived from the stage verdicts and
+enforced by DDL CHECKs; the counts sum to the full population (a tested contract):
 
-`clean_text` is a deterministic, high-fidelity render of `raw_html` (`src/clean.py`): star-pagination
-page markers are removed (captured in `page_breaks` instead), whitespace/Unicode is normalized (NFC),
-but original content — footnote bodies, captions, citations — is preserved and **no OCR is
-corrected**. OCR-suspect tokens are located (not fixed) in `opinions.ocr_suspect` (JSON). `raw_html`
-and `plain_text` are untouched. `clean_version` tracks the cleaning logic (rebuild → offsets stay
-valid). `page_breaks.char_offset` indexes into `clean_text` where each reporter page begins.
+| `corpus_status` | Count | Meaning |
+|---|---:|---|
+| `included` | 648 | canonical SCOTUS decision in U.S. Reports vols 2–18 — the corpus |
+| `outside_volume` | 41 | canonical SCOTUS decision outside the corpus span (the vol-19 staging buffer) |
+| `duplicate` | 227 | a second record of a decision represented by its canonical cluster |
+| `not_scotus` | 204 | not a U.S. Supreme Court decision (Dallas-era state/circuit cases) |
+
+Downstream analysis should select from `scotus_decisions` (or filter
+`corpus_status = 'included'`) and never re-derive scope, dedup, or volume logic.
+
+### Cleaned text and offset spans
+
+`clean_text` is a deterministic render of each corpus opinion's **chosen source field**
+(`chosen_source`; picked by the reselect stage for fidelity) through `src/clean.py`:
+star-pagination markers are removed (captured in `page_breaks` instead), whitespace/Unicode is
+normalized (NFC), and content — footnote bodies, captions, citations — is preserved. **No OCR
+is corrected**: suspect spots are located, not fixed, in `ocr_suspects` (`char_offset` indexes
+into `clean_text`). `clean_version` tracks the cleaning logic. Raw source text is not shipped —
+the verbatim raw mirror (a Release asset pinned by committed checksums) is the audit trail,
+and the offset spans plus `chosen_source`/`clean_version` pin the derivation.
 
 ```sql
 -- reconstruct which reporter page a search hit falls on
@@ -45,38 +60,15 @@ FROM opinions o JOIN page_breaks pb ON pb.opinion_id = o.opinion_id
 WHERE pb.char_offset <= instr(o.clean_text, 'commerce among the') GROUP BY o.opinion_id;
 ```
 
-## Reporter apparatus (optional separate asset)
+## Reporter apparatus (optional separate asset, pending rework)
 
-The early reporters (Dallas, Cranch, Wheaton) printed substantial front matter that is **not** part
-of any opinion — the reporter's syllabus, procedural summary, and arguments of counsel. CourtListener
-exposes this at the cluster level; it lives in a **separate, optional** database so the core corpus
-above stays byte-for-byte frozen (see `docs/clean-text-design.md`). Coverage: **688 of 1,076
-clusters** carry apparatus (1,838 rows, ~13.6M chars raw — larger than the opinion corpus itself).
-
-```bash
-python -m src.pipeline --stage apparatus   # pull + build data/processed/scotus-apparatus.sqlite
-```
-
-| Table | Notes |
-|---|---|
-| `cluster_text` | one row per (`cluster_id`, `kind`), `kind` ∈ {syllabus, headnotes, summary, headmatter, arguments, disposition, history, procedural_history}; `raw_text` stored **raw** (uncleaned), with `char_count`; `canonical_cluster_id` resolves duplicates → the decision |
-| `cluster_meta` | per cluster: `case_name_full`, `attorneys`, `judges` (absent = NULL) |
-| `meta` | build provenance + version pin (`git_commit` must match the core DB's) |
-
-Both `cluster_id` and `canonical_cluster_id` join to `clusters.cluster_id` in the core `scotus.sqlite`
-(separate file, so no enforced FK). **Join on `canonical_cluster_id`** to reach a decision's apparatus
-— much of it arrived on the Harvard `U` *duplicate*, so a naive `cluster_id` join reaches only 411 of
-the 663 decisions, vs **608** via `canonical_cluster_id` (55 decisions have no apparatus at all).
-
-```sql
-ATTACH 'data/processed/scotus-apparatus.sqlite' AS app;
-
--- all reporter apparatus for a decision (resolves duplicates automatically)
-SELECT a.kind, a.raw_text
-FROM scotus_decisions d
-JOIN app.cluster_text a ON a.canonical_cluster_id = d.cluster_id
-WHERE d.case_name LIKE 'Ware%' AND a.kind IN ('summary', 'headmatter');
-```
+The early reporters printed substantial front matter that is not part of any opinion — the
+reporter's syllabus, procedural summary, and arguments of counsel. It lives in a separate,
+optional database (`data/processed/scotus-apparatus.sqlite`, `--stage apparatus`) that
+`ATTACH`es and joins on `cluster_id`. **Caveat:** the apparatus stage still builds from a
+V1-era snapshot (`dataset/all_clusters.csv`) and its duplicate resolution predates the current
+dedup; it is scheduled for a rework onto the V2 staging before the numbers in it can be
+trusted against this database.
 
 ## Example queries
 
@@ -91,12 +83,17 @@ JOIN opinions o ON o.opinion_id = f.rowid
 JOIN clusters c ON c.cluster_id = o.cluster_id
 WHERE opinions_fts MATCH 'commerce clause';
 
--- read an opinion's text
-SELECT plain_text FROM opinions o JOIN clusters c USING (cluster_id)
-WHERE c.case_name LIKE 'McCulloch%';
+-- read a decision's text (note the archaic caption spelling M'Culloch)
+SELECT o.clean_text FROM opinions o JOIN clusters c USING (cluster_id)
+WHERE c.case_name LIKE '%ulloch%' AND o.clean_text IS NOT NULL;
 
--- trace a dropped duplicate to its canonical record
-SELECT d.cluster_id, d.case_name, k.case_name AS canonical
-FROM clusters d JOIN clusters k ON k.cluster_id = d.dup_of
-WHERE d.dedup_role = 'duplicate' LIMIT 10;
+-- trace a duplicate record to its canonical decision
+SELECT cluster_id, case_name, canonical_case_name, canonical_us_cite
+FROM duplicate_clusters LIMIT 10;
+
+-- OCR-suspect spots for one opinion, with surrounding context
+SELECT s.char_offset, s.token,
+       substr(o.clean_text, max(1, s.char_offset - 30), 70) AS context
+FROM ocr_suspects s JOIN opinions o USING (opinion_id)
+WHERE o.opinion_id = 84800 ORDER BY s.ordinal;
 ```
